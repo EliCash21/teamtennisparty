@@ -1,0 +1,35 @@
+baseURL = "https://teamtennisparty.com/"
+languageCode = "en-CA"
+title = "Team Tennis Party"
+theme = "PaperMod"
+
+paginate = 10
+enableRobotsTXT = true
+
+[params]
+  author = "Team Tennis Party"
+  description = "Pop culture through a tennis lens. Essays on books, film, music, and the rest of it."
+  defaultTheme = "light"
+  disableThemeToggle = true
+
+  [params.homeInfo]
+    Title = "Team Tennis Party"
+    Content = "Courtside takes on pop culture. We read the books, watch the films, and argue about all of it."
+
+[menu]
+  [[menu.main]]
+    name = "Writing"
+    url = "/writing/"
+    weight = 10
+  [[menu.main]]
+    name = "Now"
+    url = "/now/"
+    weight = 20
+  [[menu.main]]
+    name = "Links"
+    url = "/links/"
+    weight = 30
+
+[taxonomies]
+  tag = "tags"
+  category = "categories"

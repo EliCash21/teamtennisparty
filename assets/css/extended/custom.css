@@ -1,0 +1,98 @@
+/* ── Fonts ───────────────────────────────────────────────── */
+/* Loaded via extend_head.html — Barlow Condensed, IBM Plex Mono */
+
+/* ── Colour palette (light mode only) ───────────────────── */
+:root {
+  --theme:     #F0EBE0;   /* warm off-white background */
+  --entry:     #F8F4ED;   /* slightly lighter card/entry bg */
+  --primary:   #0A3040;   /* Deep Water — headings, body text */
+  --secondary: #6B7280;   /* muted metadata */
+  --tertiary:  #DDD8CE;   /* borders, dividers */
+  --content:   #0A3040;   /* body copy */
+  --border:    #DDD8CE;
+
+  --accent-teal:   #3BBFB0;  /* Atomic Turquoise */
+  --accent-orange: #E8622A;  /* Molded Tangerine */
+}
+
+/* ── Base ────────────────────────────────────────────────── */
+body {
+  background-color: var(--theme);
+  color: var(--content);
+}
+
+/* ── Header & nav ────────────────────────────────────────── */
+.nav {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.75rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+/* ── Home info hero ──────────────────────────────────────── */
+.home-info .entry-header h1,
+.home-info .entry-content p {
+  font-family: 'IBM Plex Mono', monospace;
+}
+
+/* ── Post titles (list + single) ────────────────────────── */
+.post-title,
+h1.post-title,
+.entry-header h1 {
+  font-family: 'Barlow Condensed', 'Arial Narrow', sans-serif;
+  font-weight: 700;
+  font-size: 2.4rem;
+  line-height: 1.05;
+  letter-spacing: 0.01em;
+  text-transform: uppercase;
+  color: var(--primary);
+}
+
+/* ── Section headings within posts ──────────────────────── */
+.post-content h2,
+.post-content h3 {
+  font-family: 'Barlow Condensed', 'Arial Narrow', sans-serif;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  color: var(--primary);
+}
+
+/* ── Post metadata (date, read time, tags) ───────────────── */
+.post-meta,
+.post-meta * {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.7rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--secondary);
+}
+
+/* ── Body copy ───────────────────────────────────────────── */
+.post-content {
+  font-size: 1.05rem;
+  line-height: 1.75;
+}
+
+/* ── Links ───────────────────────────────────────────────── */
+a {
+  color: var(--primary);
+}
+
+a:hover {
+  color: var(--accent-teal);
+}
+
+/* ── Accent rule: post entry border-left on hover ────────── */
+.post-entry:hover {
+  border-left: 3px solid var(--accent-orange);
+  padding-left: calc(var(--gap) - 3px);
+}
+
+/* ── Footer ──────────────────────────────────────────────── */
+.footer {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.7rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
