@@ -68,6 +68,16 @@
   .badge.partial{background:rgba(232,163,61,.18); color:var(--flag);}
   .badge.alldone{background:rgba(63,174,90,.18); color:var(--done);}
   .badge.photo{background:rgba(77,159,236,.15); color:var(--accent);}
+  .badge.slope{background:rgba(224,82,82,.18); color:#ff9d9d;}
+
+  .routehead{margin:14px 6px 6px; font-size:12px; font-weight:700; letter-spacing:.07em;
+    text-transform:uppercase; color:var(--dim);}
+  .routehead.today{color:var(--accent);}
+
+  #visitBar{display:flex; align-items:center; gap:10px; padding:9px 12px;
+    background:var(--panel); border-bottom:1px solid var(--line);}
+  #visitInfo{font-size:13px; color:var(--dim); flex:1; min-width:0;}
+  #btnVisit.onsite{background:var(--done); border-color:var(--done); color:#fff;}
 
   .toolbar{flex:0 0 auto; display:flex; gap:6px; padding:8px 10px; align-items:center;
     background:var(--panel); border-bottom:1px solid var(--line); flex-wrap:wrap;}
@@ -170,6 +180,12 @@
       <h1 id="siteTitle">Site</h1>
       <button class="hbtn" id="btnPhotoMenu">Photo</button>
     </header>
+
+    <div id="visitBar">
+      <button class="hbtn primary" id="btnVisit">Arrive</button>
+      <span id="visitInfo"></span>
+      <span class="badge slope" id="slopeChip" style="display:none;">⚠ steep slope</span>
+    </div>
 
     <div class="toolbar">
       <div class="seg" id="modeSeg">
@@ -396,6 +412,43 @@ function logEvent(type, z){
   scheduleEvtFlush();
 }
 function scheduleEvtFlush(){ clearTimeout(evtTimer); evtTimer = setTimeout(flushEvents, 3000); }
+function evtPush(evt){ evtQueue.push(evt); cachePut("_evtq", evtQueue); scheduleEvtFlush(); }
+
+/* ---------------- arrive/leave time tracking ---------------- */
+function getVisit(){ try{ return JSON.parse(localStorage.getItem("gt.visit")); }catch(e){ return null; } }
+function setVisit(v){ v ? localStorage.setItem("gt.visit", JSON.stringify(v)) : localStorage.removeItem("gt.visit"); }
+function leaveVisit(v){
+  evtPush({ t:new Date().toISOString(), type:"leave", siteId:v.siteId, site:v.site,
+            minutes: Math.max(0, Math.round((Date.now()-v.t)/60000)) });
+}
+function toggleVisit(){
+  if(!cur) return;
+  const v = getVisit();
+  if(v && v.siteId===cur.id){           // leaving this site
+    leaveVisit(v); setVisit(null);
+    toast("Left — time logged");
+  }else{                                 // arriving here (auto-close any open visit)
+    if(v) leaveVisit(v);
+    evtPush({ t:new Date().toISOString(), type:"arrive", siteId:cur.id, site:cur.name });
+    setVisit({ siteId:cur.id, site:cur.name, t:Date.now() });
+    toast("Arrived");
+  }
+  renderVisit();
+}
+function fmtClock(ms){ return new Date(ms).toLocaleTimeString([], {hour:"numeric", minute:"2-digit"}); }
+function renderVisit(){
+  if(!cur) return;
+  const v = getVisit(), b = $("btnVisit"), info = $("visitInfo");
+  if(v && v.siteId===cur.id){
+    const min = Math.round((Date.now()-v.t)/60000);
+    b.textContent = "Leave"; b.classList.add("onsite");
+    info.textContent = `On site since ${fmtClock(v.t)} (${min} min)`;
+  }else{
+    b.textContent = "Arrive"; b.classList.remove("onsite");
+    info.textContent = v ? `Still checked in at ${v.site}` : "";
+  }
+}
+setInterval(()=>{ if(cur) renderVisit(); }, 60000);
 async function flushEvents(){
   if(!evtQueue.length) return;
   const batch = evtQueue.slice();
@@ -478,24 +531,59 @@ async function enterApp(){
 }
 
 /* ---------------- site list ---------------- */
+const DAY_NAMES = {1:"Monday",2:"Tuesday",3:"Wednesday",4:"Thursday",5:"Friday"};
+function todayRoute(){ const d = new Date().getDay(); return (d>=1 && d<=5) ? d : null; }
+
+function siteRow(s){
+  const {total,done,flag} = s.counts||{total:0,done:0,flag:0};
+  let badge;
+  if(total===0) badge = `<span class="badge none">no zones</span>`;
+  else if(done===total) badge = `<span class="badge alldone">✓ ${done}/${total}</span>`;
+  else badge = `<span class="badge partial">${done}/${total}${flag?" ⚠":""}</span>`;
+  const b = document.createElement("button");
+  b.className = "siterow";
+  b.innerHTML = `<span class="nm">${esc(s.name)}</span>`
+    + (s.slope?'<span class="badge slope">⚠</span>':"")
+    + (s.hasPhoto?'<span class="badge photo">📷</span>':"")
+    + badge;
+  b.onclick = ()=>openSite(s.id);
+  return b;
+}
 function renderList(){
   const q = $("search").value.trim().toLowerCase();
   const wrap = $("siteList"); wrap.innerHTML = "";
-  INDEX.sites
-    .filter(s=>!q || s.name.toLowerCase().includes(q))
-    .sort((a,b)=>a.name.localeCompare(b.name))
-    .forEach(s=>{
-      const {total,done,flag} = s.counts||{total:0,done:0,flag:0};
-      let badge;
-      if(total===0) badge = `<span class="badge none">no zones</span>`;
-      else if(done===total) badge = `<span class="badge alldone">✓ ${done}/${total}</span>`;
-      else badge = `<span class="badge partial">${done}/${total}${flag?" ⚠":""}</span>`;
-      const b = document.createElement("button");
-      b.className = "siterow";
-      b.innerHTML = `<span class="nm">${esc(s.name)}</span>${s.hasPhoto?'<span class="badge photo">📷</span>':""}${badge}`;
-      b.onclick = ()=>openSite(s.id);
-      wrap.appendChild(b);
-    });
+
+  if(q){ /* searching: flat list */
+    INDEX.sites.filter(s=>s.name.toLowerCase().includes(q))
+      .sort((a,b)=>a.name.localeCompare(b.name))
+      .forEach(s=>wrap.appendChild(siteRow(s)));
+    return;
+  }
+
+  const today = todayRoute();
+  const order = [];
+  if(today) order.push(today);
+  for(let r=1;r<=5;r++) if(r!==today) order.push(r);
+
+  for(const r of order){
+    const sites = INDEX.sites.filter(s=>s.route===r)
+      .sort((a,b)=>(a.ro??99)-(b.ro??99) || a.name.localeCompare(b.name));
+    if(!sites.length) continue;
+    const h = document.createElement("div");
+    h.className = "routehead" + (r===today?" today":"");
+    h.textContent = `Route ${r} — ${DAY_NAMES[r]}` + (r===today?"  •  TODAY":"");
+    wrap.appendChild(h);
+    sites.forEach(s=>wrap.appendChild(siteRow(s)));
+  }
+
+  const rest = INDEX.sites.filter(s=>!s.route).sort((a,b)=>a.name.localeCompare(b.name));
+  if(rest.length){
+    const h = document.createElement("div");
+    h.className = "routehead";
+    h.textContent = "Other sites";
+    wrap.appendChild(h);
+    rest.forEach(s=>wrap.appendChild(siteRow(s)));
+  }
 }
 
 /* ---------------- site detail ---------------- */
@@ -510,6 +598,8 @@ async function openSite(id){
   cur = doc;
   setMode("track"); zoom = 1; applyZoom();
   $("siteTitle").textContent = cur.name;
+  $("slopeChip").style.display = meta.slope ? "inline-block" : "none";
+  renderVisit();
   $("siteNotes").value = cur.notes||"";
   $("scrList").classList.remove("active");
   $("scrSite").classList.add("active");
@@ -768,6 +858,7 @@ $("filePhoto").addEventListener("change", async ev=>{
 });
 
 /* ---------------- misc wiring ---------------- */
+$("btnVisit").onclick = toggleVisit;
 $("btnBack").onclick = backToList;
 $("search").addEventListener("input", renderList);
 $("siteNotes").addEventListener("change", ()=>{ if(cur){ cur.notes=$("siteNotes").value; persistSite(); } });
