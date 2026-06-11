@@ -1,0 +1,745 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Grounds">
+<title>ASD Grounds Tracker</title>
+<style>
+  :root{
+    --bg:#10151c; --panel:#1a2230; --panel2:#222d3f; --line:#2e3b52;
+    --text:#e8edf4; --dim:#8fa0b8;
+    --todo:#e05252; --done:#3fae5a; --flag:#e8a33d;
+    --accent:#4d9fec;
+  }
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    height:100%; overscroll-behavior:none;}
+  button{font-family:inherit;}
+
+  .screen{display:none; height:100%; flex-direction:column;}
+  .screen.active{display:flex;}
+  #app{height:100vh; height:100dvh; display:flex; flex-direction:column;}
+
+  header{flex:0 0 auto; display:flex; align-items:center; gap:8px;
+    padding:max(10px, env(safe-area-inset-top)) 12px 10px 12px;
+    background:var(--panel); border-bottom:1px solid var(--line);}
+  header h1{font-size:17px; margin:0; flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+  .hbtn{background:var(--panel2); color:var(--text); border:1px solid var(--line);
+    border-radius:10px; padding:9px 13px; font-size:14px; font-weight:600;}
+  .hbtn:active{background:var(--line);}
+  .hbtn.primary{background:var(--accent); border-color:var(--accent); color:#fff;}
+  .hbtn.danger{color:var(--todo);}
+  .hbtn[disabled]{opacity:.5;}
+
+  main{flex:1 1 auto; overflow:auto; -webkit-overflow-scrolling:touch;}
+
+  /* login */
+  #scrLogin{justify-content:center; align-items:center; padding:24px;}
+  .loginbox{width:100%; max-width:380px; background:var(--panel); border:1px solid var(--line);
+    border-radius:16px; padding:26px 22px; text-align:center;}
+  .loginbox h1{font-size:22px; margin:0 0 6px;}
+  .loginbox p{color:var(--dim); font-size:14px; margin:0 0 20px;}
+  .loginbox input{width:100%; padding:13px; font-size:17px; border-radius:10px; text-align:center;
+    border:1px solid var(--line); background:var(--panel2); color:var(--text); margin-bottom:14px;}
+  .loginbox .hbtn{width:100%; padding:13px; font-size:16px;}
+  #loginErr{color:var(--todo); font-size:14px; min-height:18px; margin-top:10px;}
+
+  /* sync pill */
+  #syncPill{font-size:12px; font-weight:700; padding:4px 10px; border-radius:99px; flex:0 0 auto;}
+  #syncPill.ok{background:rgba(63,174,90,.15); color:var(--done);}
+  #syncPill.off{background:rgba(232,163,61,.15); color:var(--flag);}
+  #syncPill.busy{background:rgba(77,159,236,.15); color:var(--accent);}
+
+  .searchwrap{padding:10px 12px; background:var(--panel); border-bottom:1px solid var(--line);}
+  #search{width:100%; padding:11px 14px; font-size:16px; border-radius:10px;
+    border:1px solid var(--line); background:var(--panel2); color:var(--text);}
+  #siteList{padding:8px 10px 80px;}
+  .siterow{display:flex; align-items:center; gap:10px; width:100%; text-align:left;
+    background:var(--panel); border:1px solid var(--line); border-radius:12px;
+    padding:13px 14px; margin-bottom:8px; color:var(--text); font-size:16px;}
+  .siterow:active{background:var(--panel2);}
+  .siterow .nm{flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+  .badge{font-size:12px; font-weight:700; padding:3px 9px; border-radius:99px; flex:0 0 auto;}
+  .badge.none{background:var(--panel2); color:var(--dim);}
+  .badge.partial{background:rgba(232,163,61,.18); color:var(--flag);}
+  .badge.alldone{background:rgba(63,174,90,.18); color:var(--done);}
+  .badge.photo{background:rgba(77,159,236,.15); color:var(--accent);}
+
+  .toolbar{flex:0 0 auto; display:flex; gap:6px; padding:8px 10px; align-items:center;
+    background:var(--panel); border-bottom:1px solid var(--line); flex-wrap:wrap;}
+  .seg{display:flex; background:var(--panel2); border:1px solid var(--line); border-radius:10px; overflow:hidden;}
+  .seg button{background:transparent; border:none; color:var(--dim); padding:9px 14px; font-size:14px; font-weight:600;}
+  .seg button.on{background:var(--accent); color:#fff;}
+  .spacer{flex:1;}
+  .zoombtns button{width:38px;}
+
+  #drawbar{display:none; gap:8px; padding:8px 10px; background:#2b3850; align-items:center;}
+  #drawbar.on{display:flex;}
+  #drawbar .msg{flex:1; font-size:14px; color:var(--text);}
+
+  #photoArea{position:relative; background:#000;}
+  #imgWrap{position:relative; margin:0 auto;}
+  #sitePhoto{display:block; width:100%; user-select:none; -webkit-user-select:none; pointer-events:none;}
+  #zonesSvg{position:absolute; inset:0; width:100%; height:100%; touch-action:manipulation;}
+  #zonesSvg polygon{stroke-width:2.5; vector-effect:non-scaling-stroke; cursor:pointer;}
+  #zonesSvg polygon.todo{fill:rgba(224,82,82,.34); stroke:#ff8a8a;}
+  #zonesSvg polygon.done{fill:rgba(63,174,90,.38); stroke:#7ee29a;}
+  #zonesSvg polygon.flag{fill:rgba(232,163,61,.40); stroke:#ffd089;}
+  #zonesSvg polygon.pending{fill:rgba(77,159,236,.30); stroke:#9ed0ff; stroke-dasharray:6 4;}
+  #zonesSvg text{fill:#fff; font-weight:700; paint-order:stroke; stroke:rgba(0,0,0,.75); stroke-width:3px;
+    text-anchor:middle; pointer-events:none;}
+  #zonesSvg circle.vtx{fill:#fff; stroke:var(--accent); stroke-width:2;}
+
+  .nophoto{padding:40px 20px; text-align:center; color:var(--dim);}
+  .nophoto p{margin:0 0 18px; font-size:15px; line-height:1.5;}
+
+  .section{padding:12px; border-top:1px solid var(--line);}
+  .section h3{margin:0 0 8px; font-size:13px; text-transform:uppercase; letter-spacing:.06em; color:var(--dim);}
+  textarea{width:100%; min-height:70px; background:var(--panel); color:var(--text);
+    border:1px solid var(--line); border-radius:10px; padding:10px; font-size:15px; font-family:inherit;}
+  .legend{display:flex; gap:14px; flex-wrap:wrap; font-size:13px; color:var(--dim); padding:8px 12px;}
+  .dot{display:inline-block; width:11px; height:11px; border-radius:3px; margin-right:5px; vertical-align:-1px;}
+
+  .zonelist{padding:0 12px 90px;}
+  .zonerow{display:flex; align-items:center; gap:10px; padding:10px 12px; margin-bottom:6px;
+    background:var(--panel); border:1px solid var(--line); border-radius:10px; font-size:15px;}
+  .zonerow .st{width:12px; height:12px; border-radius:99px; flex:0 0 auto;}
+  .zonerow .znm{flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+  .zonerow .ztp{color:var(--dim); font-size:13px;}
+
+  #overlay{position:fixed; inset:0; background:rgba(0,0,0,.55); display:none; z-index:50;
+    align-items:flex-end; justify-content:center;}
+  #overlay.on{display:flex;}
+  .sheet{background:var(--panel); width:100%; max-width:520px; border-radius:18px 18px 0 0;
+    padding:18px 16px max(18px, env(safe-area-inset-bottom)); border:1px solid var(--line); border-bottom:none;
+    max-height:85vh; overflow:auto;}
+  .sheet h2{margin:0 0 14px; font-size:17px;}
+  .sheet label{display:block; font-size:13px; color:var(--dim); margin:12px 0 5px;}
+  .sheet input[type=text], .sheet select{width:100%; padding:11px; font-size:16px; border-radius:10px;
+    border:1px solid var(--line); background:var(--panel2); color:var(--text);}
+  .sheetbtns{display:flex; gap:10px; margin-top:18px;}
+  .sheetbtns .hbtn{flex:1; padding:13px; font-size:15px; text-align:center;}
+
+  .statusbtns{display:flex; gap:8px; margin-top:4px;}
+  .statusbtns button{flex:1; padding:12px 4px; border-radius:10px; border:2px solid transparent;
+    font-size:14px; font-weight:700; background:var(--panel2); color:var(--dim);}
+  .statusbtns button.todo.on{background:rgba(224,82,82,.2); border-color:var(--todo); color:#ff9d9d;}
+  .statusbtns button.done.on{background:rgba(63,174,90,.2); border-color:var(--done); color:#8ce6a5;}
+  .statusbtns button.flag.on{background:rgba(232,163,61,.2); border-color:var(--flag); color:#ffd089;}
+
+  .hint{font-size:13px; color:var(--dim); line-height:1.5; padding:10px 12px;}
+  #toast{position:fixed; bottom:24px; left:50%; transform:translateX(-50%); background:#000c;
+    color:#fff; padding:10px 18px; border-radius:99px; font-size:14px; opacity:0; transition:opacity .25s; z-index:99; pointer-events:none; white-space:nowrap;}
+  #toast.on{opacity:1;}
+  input[type=file]{display:none;}
+</style>
+</head>
+<body>
+<div id="app">
+
+  <!-- ============ LOGIN ============ -->
+  <div class="screen active" id="scrLogin">
+    <div class="loginbox">
+      <h1>🌱 Grounds Tracker</h1>
+      <p>ASD Landscaping — site &amp; zone tracking</p>
+      <input type="password" id="pw" placeholder="Password" autocomplete="current-password">
+      <button class="hbtn primary" id="btnLogin">Sign in</button>
+      <div id="loginErr"></div>
+    </div>
+  </div>
+
+  <!-- ============ SITE LIST ============ -->
+  <div class="screen" id="scrList">
+    <header>
+      <h1>Sites</h1>
+      <span id="syncPill" class="ok">synced</span>
+      <button class="hbtn" id="btnMenu">⋯</button>
+    </header>
+    <div class="searchwrap"><input id="search" type="search" placeholder="Search sites…" autocomplete="off"></div>
+    <main><div id="siteList"></div></main>
+  </div>
+
+  <!-- ============ SITE DETAIL ============ -->
+  <div class="screen" id="scrSite">
+    <header>
+      <button class="hbtn" id="btnBack">‹ Sites</button>
+      <h1 id="siteTitle">Site</h1>
+      <button class="hbtn" id="btnPhotoMenu">Photo</button>
+    </header>
+
+    <div class="toolbar">
+      <div class="seg" id="modeSeg">
+        <button data-mode="track" class="on">Track</button>
+        <button data-mode="draw">Draw zone</button>
+        <button data-mode="edit">Edit</button>
+      </div>
+      <div class="spacer"></div>
+      <div class="seg zoombtns">
+        <button id="zoomOut">−</button>
+        <button id="zoomIn">+</button>
+      </div>
+    </div>
+
+    <div id="drawbar">
+      <div class="msg" id="drawMsg">Tap the photo to add corner points.</div>
+      <button class="hbtn" id="btnUndoPt">Undo</button>
+      <button class="hbtn" id="btnCancelDraw">Cancel</button>
+      <button class="hbtn primary" id="btnFinishZone">Finish</button>
+    </div>
+
+    <main id="siteMain">
+      <div id="photoArea">
+        <div id="imgWrap" style="display:none;">
+          <img id="sitePhoto" alt="aerial photo">
+          <svg id="zonesSvg" xmlns="http://www.w3.org/2000/svg"></svg>
+        </div>
+        <div class="nophoto" id="noPhoto">
+          <p><strong>No aerial photo yet.</strong><br>
+          Open Maps in satellite view, screenshot this site, then add it here.</p>
+          <button class="hbtn primary" id="btnAddPhoto">Add aerial photo</button>
+        </div>
+      </div>
+      <div class="legend">
+        <span><span class="dot" style="background:var(--todo)"></span>To do</span>
+        <span><span class="dot" style="background:var(--done)"></span>Done this week</span>
+        <span><span class="dot" style="background:var(--flag)"></span>Needs attention</span>
+      </div>
+      <div class="hint">Track: tap a zone to cycle its status. Edit: tap a zone to rename, change type, add notes, or delete.</div>
+      <div class="section">
+        <h3>Site notes</h3>
+        <textarea id="siteNotes" placeholder="Gate codes, parking, quirks…"></textarea>
+      </div>
+      <div class="section">
+        <h3>Zones</h3>
+        <div class="zonelist" id="zoneList"></div>
+      </div>
+    </main>
+  </div>
+</div>
+
+<!-- ============ MODALS ============ -->
+<div id="overlay">
+  <div class="sheet" id="shZone" style="display:none;">
+    <h2 id="zoneSheetTitle">Zone</h2>
+    <label>Name</label>
+    <input type="text" id="zName" placeholder="e.g. Front field, Boulevard strip">
+    <label>Task type</label>
+    <select id="zType">
+      <option>Mowing</option><option>Trimming</option><option>Blowing</option>
+      <option>Garden bed</option><option>Other</option>
+    </select>
+    <label>Status</label>
+    <div class="statusbtns" id="zStatusBtns">
+      <button class="todo" data-st="todo">To do</button>
+      <button class="done" data-st="done">Done</button>
+      <button class="flag" data-st="flag">Attention</button>
+    </div>
+    <label>Zone notes</label>
+    <textarea id="zNotes" placeholder="e.g. sprinkler heads along fence, slow on slope"></textarea>
+    <div class="sheetbtns">
+      <button class="hbtn danger" id="zDelete">Delete</button>
+      <button class="hbtn" id="zCancel">Cancel</button>
+      <button class="hbtn primary" id="zSave">Save</button>
+    </div>
+  </div>
+
+  <div class="sheet" id="shMenu" style="display:none;">
+    <h2>Menu</h2>
+    <div class="sheetbtns" style="flex-direction:column;">
+      <button class="hbtn primary" id="mNewWeek">Start new week (reset statuses)</button>
+      <button class="hbtn" id="mSync">Sync now</button>
+      <button class="hbtn" id="mAddSite">Add a site</button>
+      <button class="hbtn" id="mLogout">Sign out</button>
+      <button class="hbtn" id="mClose">Close</button>
+    </div>
+    <p class="hint" id="weekInfo"></p>
+  </div>
+
+  <div class="sheet" id="shPhoto" style="display:none;">
+    <h2>Aerial photo</h2>
+    <div class="sheetbtns" style="flex-direction:column;">
+      <button class="hbtn primary" id="pReplace">Add / replace photo</button>
+      <button class="hbtn" id="pClose">Close</button>
+    </div>
+    <p class="hint">Tip: screenshot Apple/Google Maps in satellite view, crop to the property, then pick it here from Photos. Photos are auto-compressed and synced. Replacing a photo keeps your zones.</p>
+  </div>
+</div>
+
+<div id="toast"></div>
+<input type="file" id="filePhoto" accept="image/*">
+
+<script>
+"use strict";
+/* ============================================================
+   ASD Grounds Tracker v2 — synced via grounds-tracker-api
+   (Cloudflare Worker + KV). Offline cache in IndexedDB.
+   KV layout:
+     _index          → {sites:[{id,name,hasPhoto,counts}], weekStarted, history}
+     site:<id>       → {id,name,notes,photo,zones:[...]}
+   ============================================================ */
+
+const API = "https://grounds-tracker-api.ryyvmrndfh.workers.dev";
+const SEED_SITES = ["ASIA – North Poplar Campus","ASIA – Sumas Mountain Campus","Abbotsford Arts Centre","Abbotsford Career Programs","Abbotsford Middle School","Abbotsford Senior Secondary","Abbotsford Traditional School","Abbotsford Virtual School","Abby Early Years Centre","Aberdeen Elementary","Alexander Elementary","Auguston Traditional Elementary","Bakerview Centre for Learning","Barrowtown Elementary","Blue Jay Elementary","Bradner Elementary","Chief Dan George Middle","Clayburn Middle","Colleen & Gordie Howe Middle","Dave Kandal Elementary","Dormick Park Elementary","Dr. Roberta Bondar Elementary","Dr. Thomas A. Swift Elementary","Eugene Reimer Middle","Godson Elementary","Harry Sayers Elementary","Irene Kelleher Totíltawtxw","Jackson Elementary","John Maclure Community School","King Traditional Elementary","Margaret Stenersen Elementary","McMillan Elementary","Mountain Elementary","Mt. Lehman Elementary","Máthxwi Elementary","Prince Charles Elementary","Rick Hansen Secondary","Robert Bateman Secondary","Ross Elementary","Sandy Hill Elementary","Semáth Elementary","South Poplar Elementary","Summer School","Ten-Broeck Elementary","Terry Fox Elementary","W.J. Mouat Secondary","William A. Fraser Middle","Yale Secondary","École Centennial Park Elementary","École Clearbrook Elementary"];
+
+const STATUS_ORDER = ["todo","done","flag"];
+const TYPE_ABBR = {"Mowing":"M","Trimming":"T","Blowing":"B","Garden bed":"G","Other":"•"};
+
+let INDEX = null;       // _index doc
+let cur = null;         // current full site doc
+let mode = "track";
+let zoom = 1;
+let drawPts = [];
+let editingZone = null;
+let pendingNewZone = null;
+let saveTimer = null;
+
+function uid(){ return Math.random().toString(36).slice(2,10); }
+const $ = id => document.getElementById(id);
+function toast(msg){
+  const t = $("toast"); t.textContent = msg; t.classList.add("on");
+  clearTimeout(t._tm); t._tm = setTimeout(()=>t.classList.remove("on"), 1800);
+}
+function esc(s){ return String(s).replace(/[&<>"]/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+function setPill(state, label){
+  const p = $("syncPill"); p.className = state; p.textContent = label;
+}
+
+/* ---------------- IndexedDB cache ---------------- */
+function idb(){
+  return new Promise((res,rej)=>{
+    const r = indexedDB.open("groundsTrackerCache",1);
+    r.onupgradeneeded = ()=> r.result.createObjectStore("docs");
+    r.onsuccess = ()=>res(r.result);
+    r.onerror = ()=>rej(r.error);
+  });
+}
+async function cachePut(key,val){
+  const db = await idb();
+  return new Promise((res,rej)=>{
+    const tx = db.transaction("docs","readwrite");
+    tx.objectStore("docs").put(val,key);
+    tx.oncomplete=res; tx.onerror=()=>rej(tx.error);
+  });
+}
+async function cacheGet(key){
+  const db = await idb();
+  return new Promise((res,rej)=>{
+    const rq = db.transaction("docs").objectStore("docs").get(key);
+    rq.onsuccess=()=>res(rq.result??null); rq.onerror=()=>rej(rq.error);
+  });
+}
+
+/* ---------------- API ---------------- */
+async function apiGet(key){
+  const r = await fetch(`${API}/site/${encodeURIComponent(key)}`);
+  if(!r.ok) throw new Error("GET "+key+" "+r.status);
+  return r.json();
+}
+async function apiPut(key,doc){
+  const r = await fetch(`${API}/site/${encodeURIComponent(key)}`,{
+    method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(doc)});
+  if(!r.ok) throw new Error("POST "+key+" "+r.status);
+}
+
+/* dirty-doc queue for offline edits */
+async function markDirty(key){
+  const d = (await cacheGet("_dirty"))||[];
+  if(!d.includes(key)) d.push(key);
+  await cachePut("_dirty", d);
+}
+async function flushDirty(){
+  let d = (await cacheGet("_dirty"))||[];
+  if(!d.length) return true;
+  setPill("busy","syncing…");
+  for(const key of [...d]){
+    try{
+      const doc = await cacheGet(key);
+      if(doc!==null) await apiPut(key,doc);
+      d = d.filter(k=>k!==key);
+      await cachePut("_dirty", d);
+    }catch(e){ setPill("off","offline — will retry"); return false; }
+  }
+  setPill("ok","synced");
+  return true;
+}
+/* save doc: cache immediately, push to API, queue on failure */
+async function saveDoc(key,doc){
+  await cachePut(key,doc);
+  try{
+    setPill("busy","syncing…");
+    await apiPut(key,doc);
+    await flushDirty();
+    setPill("ok","synced");
+  }catch(e){
+    await markDirty(key);
+    setPill("off","offline — will retry");
+  }
+}
+window.addEventListener("online", flushDirty);
+
+/* ---------------- index ---------------- */
+function newIndex(){
+  return { sites: SEED_SITES.map(n=>({id:uid(), name:n, hasPhoto:false, counts:{total:0,done:0,flag:0}})),
+           weekStarted: new Date().toISOString().slice(0,10), history: [] };
+}
+async function loadIndex(){
+  try{
+    let idx = await apiGet("_index");
+    if(!idx || !Array.isArray(idx.sites)){
+      idx = newIndex();
+      await apiPut("_index", idx);
+    }
+    INDEX = idx;
+    await cachePut("_index", idx);
+    setPill("ok","synced");
+  }catch(e){
+    INDEX = await cacheGet("_index");
+    if(!INDEX){ INDEX = newIndex(); await cachePut("_index",INDEX); }
+    setPill("off","offline");
+  }
+}
+function saveIndexDebounced(){
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(()=>saveDoc("_index", INDEX), 800);
+}
+function refreshCounts(siteDoc){
+  const meta = INDEX.sites.find(s=>s.id===siteDoc.id);
+  if(!meta) return;
+  meta.counts = { total: siteDoc.zones.length,
+    done: siteDoc.zones.filter(z=>z.status==="done").length,
+    flag: siteDoc.zones.filter(z=>z.status==="flag").length };
+  meta.hasPhoto = !!siteDoc.photo;
+  meta.name = siteDoc.name;
+}
+
+/* ---------------- auth ---------------- */
+async function tryLogin(pw){
+  const r = await fetch(`${API}/auth`,{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({password:pw})});
+  return r.ok;
+}
+$("btnLogin").onclick = async ()=>{
+  const pw = $("pw").value;
+  $("loginErr").textContent = "";
+  $("btnLogin").disabled = true;
+  try{
+    if(await tryLogin(pw)){
+      localStorage.setItem("gt.auth","1");
+      await enterApp();
+    }else $("loginErr").textContent = "Wrong password.";
+  }catch(e){
+    /* offline but previously authed? allow cached entry */
+    if(localStorage.getItem("gt.auth")==="1"){ await enterApp(); }
+    else $("loginErr").textContent = "Can't reach the server.";
+  }
+  $("btnLogin").disabled = false;
+};
+$("pw").addEventListener("keydown",e=>{ if(e.key==="Enter") $("btnLogin").click(); });
+
+async function enterApp(){
+  await loadIndex();
+  $("scrLogin").classList.remove("active");
+  $("scrList").classList.add("active");
+  renderList();
+  flushDirty();
+}
+
+/* ---------------- site list ---------------- */
+function renderList(){
+  const q = $("search").value.trim().toLowerCase();
+  const wrap = $("siteList"); wrap.innerHTML = "";
+  INDEX.sites
+    .filter(s=>!q || s.name.toLowerCase().includes(q))
+    .sort((a,b)=>a.name.localeCompare(b.name))
+    .forEach(s=>{
+      const {total,done,flag} = s.counts||{total:0,done:0,flag:0};
+      let badge;
+      if(total===0) badge = `<span class="badge none">no zones</span>`;
+      else if(done===total) badge = `<span class="badge alldone">✓ ${done}/${total}</span>`;
+      else badge = `<span class="badge partial">${done}/${total}${flag?" ⚠":""}</span>`;
+      const b = document.createElement("button");
+      b.className = "siterow";
+      b.innerHTML = `<span class="nm">${esc(s.name)}</span>${s.hasPhoto?'<span class="badge photo">📷</span>':""}${badge}`;
+      b.onclick = ()=>openSite(s.id);
+      wrap.appendChild(b);
+    });
+}
+
+/* ---------------- site detail ---------------- */
+async function openSite(id){
+  const meta = INDEX.sites.find(s=>s.id===id);
+  if(!meta) return;
+  const key = "site:"+id;
+  let doc = null;
+  try{ doc = await apiGet(key); if(doc) await cachePut(key,doc); }
+  catch(e){ doc = await cacheGet(key); }
+  if(!doc) doc = {id, name:meta.name, notes:"", photo:null, zones:[]};
+  cur = doc;
+  setMode("track"); zoom = 1; applyZoom();
+  $("siteTitle").textContent = cur.name;
+  $("siteNotes").value = cur.notes||"";
+  $("scrList").classList.remove("active");
+  $("scrSite").classList.add("active");
+  const img = $("sitePhoto");
+  if(cur.photo){
+    img.src = cur.photo;
+    img.onload = ()=>{ $("imgWrap").style.display="block"; $("noPhoto").style.display="none"; renderZones(); };
+  }else{
+    $("imgWrap").style.display="none"; $("noPhoto").style.display="block";
+  }
+  renderZoneList();
+}
+function persistSite(){
+  if(!cur) return;
+  refreshCounts(cur);
+  saveDoc("site:"+cur.id, cur);
+  saveIndexDebounced();
+}
+function backToList(){
+  if(cur){ cur.notes = $("siteNotes").value; persistSite(); }
+  cur = null; drawPts=[];
+  $("scrSite").classList.remove("active");
+  $("scrList").classList.add("active");
+  renderList();
+}
+
+/* ---------------- zone rendering ---------------- */
+function svgDims(){
+  const img = $("sitePhoto");
+  return {W: img.naturalWidth||1000, H: img.naturalHeight||750};
+}
+function centroid(pts){
+  let x=0,y=0; pts.forEach(p=>{x+=p[0];y+=p[1];});
+  return [x/pts.length, y/pts.length];
+}
+function renderZones(){
+  const svg = $("zonesSvg");
+  const {W,H} = svgDims();
+  svg.setAttribute("viewBox",`0 0 ${W} ${H}`);
+  svg.innerHTML = "";
+  if(!cur) return;
+  const fontSize = Math.max(W,H)/45;
+
+  cur.zones.forEach(z=>{
+    const ptStr = z.points.map(p=>`${p[0]*W},${p[1]*H}`).join(" ");
+    const poly = document.createElementNS("http://www.w3.org/2000/svg","polygon");
+    poly.setAttribute("points",ptStr);
+    poly.setAttribute("class",z.status);
+    poly.addEventListener("click",ev=>{ ev.stopPropagation(); zoneTapped(z); });
+    svg.appendChild(poly);
+    const [cx,cy] = centroid(z.points);
+    const txt = document.createElementNS("http://www.w3.org/2000/svg","text");
+    txt.setAttribute("x",cx*W); txt.setAttribute("y",cy*H);
+    txt.setAttribute("font-size",fontSize);
+    txt.textContent = `${TYPE_ABBR[z.type]||"•"} ${z.name}`;
+    svg.appendChild(txt);
+  });
+
+  if(mode==="draw" && drawPts.length){
+    const ptStr = drawPts.map(p=>`${p[0]*W},${p[1]*H}`).join(" ");
+    const poly = document.createElementNS("http://www.w3.org/2000/svg","polygon");
+    poly.setAttribute("points",ptStr);
+    poly.setAttribute("class","pending");
+    svg.appendChild(poly);
+    drawPts.forEach(p=>{
+      const c = document.createElementNS("http://www.w3.org/2000/svg","circle");
+      c.setAttribute("cx",p[0]*W); c.setAttribute("cy",p[1]*H);
+      c.setAttribute("r",Math.max(W,H)/120); c.setAttribute("class","vtx");
+      svg.appendChild(c);
+    });
+  }
+}
+function renderZoneList(){
+  const wrap = $("zoneList"); wrap.innerHTML = "";
+  if(!cur || !cur.zones.length){
+    wrap.innerHTML = '<p class="hint" style="padding:0;">No zones yet — use “Draw zone” to outline areas on the photo.</p>';
+    return;
+  }
+  const cMap = {todo:"var(--todo)",done:"var(--done)",flag:"var(--flag)"};
+  cur.zones.forEach(z=>{
+    const d = document.createElement("div");
+    d.className="zonerow";
+    d.innerHTML = `<span class="st" style="background:${cMap[z.status]}"></span>
+      <span class="znm">${esc(z.name)}${z.notes?` <span class="ztp">— ${esc(z.notes)}</span>`:""}</span>
+      <span class="ztp">${esc(z.type)}</span>`;
+    d.onclick = ()=>openZoneSheet(z);
+    wrap.appendChild(d);
+  });
+}
+
+/* ---------------- interactions ---------------- */
+function zoneTapped(z){
+  if(mode==="track"){
+    const i = STATUS_ORDER.indexOf(z.status);
+    z.status = STATUS_ORDER[(i+1)%STATUS_ORDER.length];
+    persistSite(); renderZones(); renderZoneList();
+  }else if(mode==="edit"){
+    openZoneSheet(z);
+  }
+}
+$("zonesSvg").addEventListener("click",ev=>{
+  if(mode!=="draw" || !cur) return;
+  const svg = $("zonesSvg");
+  const r = svg.getBoundingClientRect();
+  const x = (ev.clientX - r.left)/r.width, y = (ev.clientY - r.top)/r.height;
+  if(x<0||x>1||y<0||y>1) return;
+  drawPts.push([x,y]);
+  $("drawMsg").textContent = `${drawPts.length} point${drawPts.length===1?"":"s"} — need at least 3.`;
+  renderZones();
+});
+
+function setMode(m){
+  if(m==="draw" && cur && !cur.photo){ toast("Add an aerial photo first"); m = "track"; }
+  mode = m;
+  document.querySelectorAll("#modeSeg button").forEach(b=>b.classList.toggle("on",b.dataset.mode===m));
+  $("drawbar").classList.toggle("on", m==="draw");
+  if(m!=="draw") drawPts=[];
+  if(m==="draw") $("drawMsg").textContent = "Tap the photo to add corner points.";
+  renderZones();
+}
+document.querySelectorAll("#modeSeg button").forEach(b=>b.onclick=()=>setMode(b.dataset.mode));
+$("btnUndoPt").onclick = ()=>{ drawPts.pop(); renderZones(); };
+$("btnCancelDraw").onclick = ()=>setMode("track");
+$("btnFinishZone").onclick = ()=>{
+  if(drawPts.length<3){ toast("Need at least 3 points"); return; }
+  pendingNewZone = drawPts.slice();
+  openZoneSheet(null);
+};
+
+/* ---------------- zoom ---------------- */
+function applyZoom(){ $("imgWrap").style.width = (zoom*100)+"%"; }
+$("zoomIn").onclick = ()=>{ zoom = Math.min(4, zoom+0.5); applyZoom(); };
+$("zoomOut").onclick = ()=>{ zoom = Math.max(1, zoom-0.5); applyZoom(); };
+
+/* ---------------- zone sheet ---------------- */
+let sheetStatus = "todo";
+function openZoneSheet(z){
+  editingZone = z;
+  $("zoneSheetTitle").textContent = z ? "Edit zone" : "New zone";
+  $("zName").value = z ? z.name : "";
+  $("zType").value = z ? z.type : "Mowing";
+  $("zNotes").value = z ? (z.notes||"") : "";
+  sheetStatus = z ? z.status : "todo";
+  paintStatusBtns();
+  $("zDelete").style.display = z ? "block" : "none";
+  showSheet("shZone");
+}
+function paintStatusBtns(){
+  document.querySelectorAll("#zStatusBtns button").forEach(b=>b.classList.toggle("on",b.dataset.st===sheetStatus));
+}
+document.querySelectorAll("#zStatusBtns button").forEach(b=>b.onclick=()=>{ sheetStatus=b.dataset.st; paintStatusBtns(); });
+$("zSave").onclick = ()=>{
+  const name = $("zName").value.trim() || "Zone";
+  if(editingZone){
+    Object.assign(editingZone,{name, type:$("zType").value, notes:$("zNotes").value.trim(), status:sheetStatus});
+  }else if(pendingNewZone){
+    cur.zones.push({id:uid(), name, type:$("zType").value, notes:$("zNotes").value.trim(),
+                    status:sheetStatus, points:pendingNewZone});
+    pendingNewZone = null;
+    setMode("track");
+  }
+  persistSite(); hideSheets(); renderZones(); renderZoneList();
+};
+$("zCancel").onclick = ()=>{ pendingNewZone=null; hideSheets(); };
+$("zDelete").onclick = ()=>{
+  if(editingZone && confirm(`Delete zone “${editingZone.name}”?`)){
+    cur.zones = cur.zones.filter(z=>z!==editingZone);
+    persistSite(); hideSheets(); renderZones(); renderZoneList();
+  }
+};
+
+/* ---------------- sheets/menu ---------------- */
+function showSheet(id){
+  ["shZone","shMenu","shPhoto"].forEach(s=>$(s).style.display = s===id?"block":"none");
+  $("overlay").classList.add("on");
+}
+function hideSheets(){ $("overlay").classList.remove("on"); }
+$("overlay").addEventListener("click",ev=>{ if(ev.target===$("overlay")) hideSheets(); });
+
+$("btnMenu").onclick = ()=>{
+  $("weekInfo").textContent = `Current week started ${INDEX.weekStarted}. “New week” logs this week's progress to history, then resets every zone to “To do”.`;
+  showSheet("shMenu");
+};
+$("mClose").onclick = hideSheets;
+$("mSync").onclick = async ()=>{ hideSheets(); await flushDirty(); await loadIndex(); renderList(); toast("Synced"); };
+$("mLogout").onclick = ()=>{ localStorage.removeItem("gt.auth"); location.reload(); };
+$("mNewWeek").onclick = async ()=>{
+  if(!confirm("Log this week and reset all zone statuses to To do?")) return;
+  hideSheets(); setPill("busy","resetting…");
+  const entry = { week: INDEX.weekStarted, endedAt: new Date().toISOString().slice(0,10), sites: [] };
+  for(const meta of INDEX.sites){
+    if(!meta.counts || !meta.counts.total) continue;
+    const key = "site:"+meta.id;
+    let doc = null;
+    try{ doc = await apiGet(key); }catch(e){ doc = await cacheGet(key); }
+    if(!doc) continue;
+    entry.sites.push({name:doc.name, done:doc.zones.filter(z=>z.status==="done").length,
+      flagged:doc.zones.filter(z=>z.status==="flag").map(z=>z.name), total:doc.zones.length});
+    doc.zones.forEach(z=>z.status="todo");
+    await saveDoc(key,doc);
+    refreshCounts(doc);
+  }
+  INDEX.history.push(entry);
+  INDEX.weekStarted = new Date().toISOString().slice(0,10);
+  await saveDoc("_index", INDEX);
+  renderList(); toast("New week started");
+};
+$("mAddSite").onclick = ()=>{
+  const name = prompt("Site name:");
+  if(name && name.trim()){
+    INDEX.sites.push({id:uid(), name:name.trim(), hasPhoto:false, counts:{total:0,done:0,flag:0}});
+    saveDoc("_index", INDEX);
+    renderList(); hideSheets();
+  }
+};
+
+/* ---------------- photo handling ---------------- */
+$("btnPhotoMenu").onclick = ()=>showSheet("shPhoto");
+$("pClose").onclick = hideSheets;
+$("pReplace").onclick = ()=>{ hideSheets(); $("filePhoto").click(); };
+$("btnAddPhoto").onclick = ()=>$("filePhoto").click();
+
+function downscale(file){
+  return new Promise((res,rej)=>{
+    const img = new Image();
+    img.onload = ()=>{
+      const MAX = 1600;
+      const scale = Math.min(1, MAX/Math.max(img.width,img.height));
+      const c = document.createElement("canvas");
+      c.width = Math.round(img.width*scale); c.height = Math.round(img.height*scale);
+      c.getContext("2d").drawImage(img,0,0,c.width,c.height);
+      res(c.toDataURL("image/jpeg",0.82));
+      URL.revokeObjectURL(img.src);
+    };
+    img.onerror = rej;
+    img.src = URL.createObjectURL(file);
+  });
+}
+$("filePhoto").addEventListener("change", async ev=>{
+  const f = ev.target.files[0]; ev.target.value="";
+  if(!f || !cur) return;
+  toast("Processing photo…");
+  try{
+    cur.photo = await downscale(f);
+    persistSite();
+    const img = $("sitePhoto");
+    img.src = cur.photo;
+    img.onload = ()=>{ $("imgWrap").style.display="block"; $("noPhoto").style.display="none"; renderZones(); };
+    toast("Photo saved");
+  }catch(e){ toast("Couldn't read that image"); }
+});
+
+/* ---------------- misc wiring ---------------- */
+$("btnBack").onclick = backToList;
+$("search").addEventListener("input", renderList);
+$("siteNotes").addEventListener("change", ()=>{ if(cur){ cur.notes=$("siteNotes").value; persistSite(); } });
+
+/* auto-login if previously authed */
+if(localStorage.getItem("gt.auth")==="1"){ enterApp(); }
+</script>
+</body>
+</html>
