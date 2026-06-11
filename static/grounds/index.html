@@ -379,7 +379,35 @@ async function saveDoc(key,doc){
     setPill("off","offline — will retry");
   }
 }
-window.addEventListener("online", flushDirty);
+window.addEventListener("online", ()=>{ flushDirty(); flushEvents(); });
+
+/* ---------------- event log (for future graphs) ----------------
+   Every status change is timestamped and appended to a monthly
+   KV doc (_events:YYYY-MM). Queued locally, synced in batches. */
+let evtQueue = [];
+let evtTimer = null;
+async function loadEvtQueue(){ evtQueue = (await cacheGet("_evtq"))||[]; if(evtQueue.length) scheduleEvtFlush(); }
+function logEvent(type, z){
+  evtQueue.push({ t: new Date().toISOString(), type,
+    siteId: cur?cur.id:null, site: cur?cur.name:null,
+    zoneId: z?z.id:null, zone: z?z.name:null, ztype: z?z.type:null,
+    status: z?z.status:null });
+  cachePut("_evtq", evtQueue);
+  scheduleEvtFlush();
+}
+function scheduleEvtFlush(){ clearTimeout(evtTimer); evtTimer = setTimeout(flushEvents, 3000); }
+async function flushEvents(){
+  if(!evtQueue.length) return;
+  const batch = evtQueue.slice();
+  const key = "_events:" + new Date().toISOString().slice(0,7);
+  try{
+    const doc = (await apiGet(key).catch(()=>null)) || {events:[]};
+    doc.events.push(...batch);
+    await apiPut(key, doc);
+    evtQueue = evtQueue.slice(batch.length);
+    await cachePut("_evtq", evtQueue);
+  }catch(e){ /* offline — queue persists, retried on online/sync/next event */ }
+}
 
 /* ---------------- index ---------------- */
 function newIndex(){
@@ -446,6 +474,7 @@ async function enterApp(){
   $("scrList").classList.add("active");
   renderList();
   flushDirty();
+  loadEvtQueue();
 }
 
 /* ---------------- site list ---------------- */
@@ -576,6 +605,7 @@ function zoneTapped(z){
   if(mode==="track"){
     const i = STATUS_ORDER.indexOf(z.status);
     z.status = STATUS_ORDER[(i+1)%STATUS_ORDER.length];
+    logEvent("status", z);
     persistSite(); renderZones(); renderZoneList();
   }else if(mode==="edit"){
     openZoneSheet(z);
@@ -635,7 +665,9 @@ document.querySelectorAll("#zStatusBtns button").forEach(b=>b.onclick=()=>{ shee
 $("zSave").onclick = ()=>{
   const name = $("zName").value.trim() || "Zone";
   if(editingZone){
+    const statusChanged = editingZone.status !== sheetStatus;
     Object.assign(editingZone,{name, type:$("zType").value, notes:$("zNotes").value.trim(), status:sheetStatus});
+    if(statusChanged) logEvent("status", editingZone);
   }else if(pendingNewZone){
     cur.zones.push({id:uid(), name, type:$("zType").value, notes:$("zNotes").value.trim(),
                     status:sheetStatus, points:pendingNewZone});
@@ -665,7 +697,7 @@ $("btnMenu").onclick = ()=>{
   showSheet("shMenu");
 };
 $("mClose").onclick = hideSheets;
-$("mSync").onclick = async ()=>{ hideSheets(); await flushDirty(); await loadIndex(); renderList(); toast("Synced"); };
+$("mSync").onclick = async ()=>{ hideSheets(); await flushDirty(); await flushEvents(); await loadIndex(); renderList(); toast("Synced"); };
 $("mLogout").onclick = ()=>{ localStorage.removeItem("gt.auth"); location.reload(); };
 $("mNewWeek").onclick = async ()=>{
   if(!confirm("Log this week and reset all zone statuses to To do?")) return;
@@ -686,6 +718,8 @@ $("mNewWeek").onclick = async ()=>{
   INDEX.history.push(entry);
   INDEX.weekStarted = new Date().toISOString().slice(0,10);
   await saveDoc("_index", INDEX);
+  evtQueue.push({t:new Date().toISOString(), type:"new_week"});
+  cachePut("_evtq", evtQueue); scheduleEvtFlush();
   renderList(); toast("New week started");
 };
 $("mAddSite").onclick = ()=>{
