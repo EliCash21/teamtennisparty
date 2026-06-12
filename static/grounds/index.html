@@ -349,15 +349,20 @@ async function cacheGet(key){
   });
 }
 
-/* ---------------- API ---------------- */
+/* ---------------- API (all calls time out fast on weak signal) ---------------- */
+function fetchT(url, opts={}, ms=6000){
+  const ctl = new AbortController();
+  const tm = setTimeout(()=>ctl.abort(), ms);
+  return fetch(url, {...opts, signal:ctl.signal}).finally(()=>clearTimeout(tm));
+}
 async function apiGet(key){
-  const r = await fetch(`${API}/site/${encodeURIComponent(key)}`);
+  const r = await fetchT(`${API}/site/${encodeURIComponent(key)}`);
   if(!r.ok) throw new Error("GET "+key+" "+r.status);
   return r.json();
 }
 async function apiPut(key,doc){
-  const r = await fetch(`${API}/site/${encodeURIComponent(key)}`,{
-    method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(doc)});
+  const r = await fetchT(`${API}/site/${encodeURIComponent(key)}`,{
+    method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(doc)}, 20000);
   if(!r.ok) throw new Error("POST "+key+" "+r.status);
 }
 
@@ -468,17 +473,19 @@ function newIndex(){
            weekStarted: new Date().toISOString().slice(0,10), history: [] };
 }
 async function loadIndex(){
+  /* cache-first: show what we have instantly, refresh in background */
+  const cached = await cacheGet("_index");
+  if(cached){ INDEX = cached; }
   try{
     let idx = await apiGet("_index");
     if(!idx || !Array.isArray(idx.sites)){
-      idx = newIndex();
+      idx = cached || newIndex();
       await apiPut("_index", idx);
     }
     INDEX = idx;
     await cachePut("_index", idx);
     setPill("ok","synced");
   }catch(e){
-    INDEX = await cacheGet("_index");
     if(!INDEX){ INDEX = newIndex(); await cachePut("_index",INDEX); }
     setPill("off","offline");
   }
@@ -528,6 +535,19 @@ async function enterApp(){
   renderList();
   flushDirty();
   loadEvtQueue();
+  warmCache();
+}
+
+/* pre-download site docs (route sites first) so the field works offline */
+async function warmCache(){
+  const ordered = [...INDEX.sites].sort((a,b)=>(a.route?0:1)-(b.route?0:1));
+  for(const meta of ordered){
+    const key = "site:"+meta.id;
+    try{
+      const fresh = await apiGet(key);
+      if(fresh) await cachePut(key, fresh);
+    }catch(e){ break; } /* offline — stop, try again next launch */
+  }
 }
 
 /* ---------------- site list ---------------- */
@@ -591,9 +611,13 @@ async function openSite(id){
   const meta = INDEX.sites.find(s=>s.id===id);
   if(!meta) return;
   const key = "site:"+id;
-  let doc = null;
-  try{ doc = await apiGet(key); if(doc) await cachePut(key,doc); }
-  catch(e){ doc = await cacheGet(key); }
+  /* cache-first: open instantly from the iPad, refresh from server in background */
+  let doc = await cacheGet(key);
+  if(doc){
+    apiGet(key).then(fresh=>{ if(fresh) cachePut(key,fresh); }).catch(()=>{});
+  }else{
+    try{ doc = await apiGet(key); if(doc) await cachePut(key,doc); }catch(e){}
+  }
   if(!doc) doc = {id, name:meta.name, notes:"", photo:null, zones:[]};
   cur = doc;
   setMode("track"); zoom = 1; applyZoom();
@@ -862,6 +886,11 @@ $("btnVisit").onclick = toggleVisit;
 $("btnBack").onclick = backToList;
 $("search").addEventListener("input", renderList);
 $("siteNotes").addEventListener("change", ()=>{ if(cur){ cur.notes=$("siteNotes").value; persistSite(); } });
+
+/* offline shell: service worker keeps the app loadable with no signal */
+if("serviceWorker" in navigator){
+  navigator.serviceWorker.register("/grounds/sw.js").catch(()=>{});
+}
 
 /* auto-login if previously authed */
 if(localStorage.getItem("gt.auth")==="1"){ enterApp(); }
