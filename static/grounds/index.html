@@ -154,6 +154,23 @@
   .zonerow .znm{flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
   .zonerow .ztp{color:var(--dim); font-size:13px;}
 
+  .logadd{display:flex; gap:8px; padding:2px 0 10px;}
+  .logadd input[type=text]{flex:1; padding:11px 12px; font-size:15px; border-radius:10px; min-height:var(--tap);
+    border:1px solid var(--line); background:var(--panel); color:var(--text);}
+  .logadd .hbtn{flex:0 0 auto;}
+  .openitem{display:flex; align-items:flex-start; gap:9px; padding:10px 11px; margin-bottom:7px;
+    background:var(--panel2); border-radius:11px; cursor:pointer;}
+  .logitem{display:flex; align-items:flex-start; gap:9px; padding:9px 0; border-bottom:1px solid var(--line);}
+  .logitem:last-child{border-bottom:none;}
+  .logitem.tappable{cursor:pointer;}
+  .openitem .ltxt, .logitem .ltxt{font-size:14.5px; line-height:1.4;}
+  .logitem .ltxt.closed{color:var(--dim); text-decoration:line-through;}
+  .openitem .lts, .logitem .lts{font-size:12px; color:var(--dim); margin-top:2px;}
+  .lico{flex:0 0 auto; margin-top:1px;}
+  .lico.note{color:var(--dim);}
+  .lico.open{color:var(--flag);}
+  .lico.done{color:var(--done);}
+
   .statgrid{display:grid; grid-template-columns:repeat(3,1fr); gap:10px; padding:12px;}
   .statcard{background:var(--panel); border:1px solid var(--line); border-radius:13px; box-shadow:var(--shadow);
     padding:14px 8px; text-align:center;}
@@ -285,8 +302,19 @@
       </div>
       <div class="hint">Track: tap a zone to cycle its status. Edit: tap a zone to rename, change type, add notes, or delete.</div>
       <div class="section">
-        <h3>Site notes</h3>
+        <h3>Reference info</h3>
         <textarea id="siteNotes" placeholder="Gate codes, parking, quirks…"></textarea>
+      </div>
+      <div class="section" id="logSection">
+        <h3>Open</h3>
+        <div id="openList"></div>
+        <div class="logadd">
+          <input type="text" id="logInput" placeholder="Add a note or task…" maxlength="300">
+          <button class="hbtn" id="logTypeBtn" data-type="note">Note</button>
+          <button class="hbtn primary icononly" id="logAddBtn" title="Add">+</button>
+        </div>
+        <h3 style="margin-top:14px;">Log</h3>
+        <div id="logFeed"></div>
       </div>
       <div class="section">
         <h3>Zones</h3>
@@ -367,7 +395,8 @@
    (Cloudflare Worker + KV). Offline cache in IndexedDB.
    KV layout:
      _index          → {sites:[{id,name,hasPhoto,counts}], weekStarted, history}
-     site:<id>       → {id,name,notes,photo,zones:[...]}
+     site:<id>       → {id,name,notes,photo,zones:[...],log:[...]}
+   log entries: {id,ts,type:'note'|'task',text,status:'open'|'done'|null,doneTs}
    ============================================================ */
 
 const API = "https://grounds-tracker-api.ryyvmrndfh.workers.dev";
@@ -384,6 +413,7 @@ let drawPts = [];
 let editingZone = null;
 let pendingNewZone = null;
 let saveTimer = null;
+let logType = "note";
 
 function uid(){ return Math.random().toString(36).slice(2,10); }
 const $ = id => document.getElementById(id);
@@ -401,7 +431,10 @@ const ICONS = {
   sun:`<svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><line x1="12" y1="2" x2="12" y2="4"/><line x1="12" y1="20" x2="12" y2="22"/><line x1="4.93" y1="4.93" x2="6.34" y2="6.34"/><line x1="17.66" y1="17.66" x2="19.07" y2="19.07"/><line x1="2" y1="12" x2="4" y2="12"/><line x1="20" y1="12" x2="22" y2="12"/><line x1="4.93" y1="19.07" x2="6.34" y2="17.66"/><line x1="17.66" y1="6.34" x2="19.07" y2="4.93"/></svg>`,
   moon:`<svg class="icon" viewBox="0 0 24 24"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>`,
   menu:`<svg class="icon filled" viewBox="0 0 24 24"><circle cx="12" cy="5" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="12" cy="19" r="1.6"/></svg>`,
-  history:`<svg class="icon" viewBox="0 0 24 24"><line x1="6" y1="20" x2="6" y2="13"/><line x1="12" y1="20" x2="12" y2="6"/><line x1="18" y1="20" x2="18" y2="10"/></svg>`
+  history:`<svg class="icon" viewBox="0 0 24 24"><line x1="6" y1="20" x2="6" y2="13"/><line x1="12" y1="20" x2="12" y2="6"/><line x1="18" y1="20" x2="18" y2="10"/></svg>`,
+  note:`<svg class="icon" viewBox="0 0 24 24"><line x1="5" y1="7" x2="19" y2="7"/><line x1="5" y1="12" x2="19" y2="12"/><line x1="5" y1="17" x2="13" y2="17"/></svg>`,
+  square:`<svg class="icon" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="4" fill="none" stroke="currentColor" stroke-width="2"/></svg>`,
+  checksquare:`<svg class="icon" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="4" fill="none" stroke="currentColor" stroke-width="2"/><polyline points="8 12.5 11 15.5 16.5 9"/></svg>`
 };
 function initIcons(){
   $("btnMenu").innerHTML = ICONS.menu;
@@ -733,13 +766,15 @@ async function openSite(id){
   }else{
     try{ doc = await apiGet(key); if(doc) await cachePut(key,doc); }catch(e){}
   }
-  if(!doc) doc = {id, name:meta.name, notes:"", photo:null, zones:[]};
+  if(!doc) doc = {id, name:meta.name, notes:"", photo:null, zones:[], log:[]};
   cur = doc;
+  cur.log = Array.isArray(cur.log) ? cur.log : [];
   setMode("track"); zoom = 1; applyZoom();
   $("siteTitle").textContent = cur.name;
   $("slopeChip").style.display = meta.slope ? "inline-block" : "none";
   renderVisit();
   $("siteNotes").value = cur.notes||"";
+  renderLog();
   $("scrList").classList.remove("active");
   $("scrSite").classList.add("active");
   const img = $("sitePhoto");
@@ -825,6 +860,79 @@ function renderZoneList(){
       <span class="znm">${esc(z.name)}${z.notes?` <span class="ztp">— ${esc(z.notes)}</span>`:""}</span>
       <span class="ztp">${esc(z.type)}</span>`;
     d.onclick = ()=>openZoneSheet(z);
+    wrap.appendChild(d);
+  });
+}
+
+/* ---------------- log (notes + tasks) ---------------- */
+function relTime(ts){
+  const d = Date.now() - new Date(ts).getTime();
+  const days = Math.floor(d/86400000);
+  if(days<=0) return "today";
+  if(days===1) return "yesterday";
+  if(days<7) return days+"d ago";
+  const weeks = Math.floor(days/7);
+  if(weeks<5) return weeks+"w ago";
+  return new Date(ts).toLocaleDateString([], {month:"short", day:"numeric"});
+}
+function fmtLogTs(ts){
+  const d = new Date(ts);
+  const sameDay = d.toDateString() === new Date().toDateString();
+  const time = d.toLocaleTimeString([], {hour:"numeric", minute:"2-digit"});
+  return sameDay ? `today, ${time}` : `${d.toLocaleDateString([], {month:"short", day:"numeric"})}, ${time}`;
+}
+function addLogEntry(text, type){
+  if(!cur || !text.trim()) return;
+  cur.log.push({ id: uid(), ts: new Date().toISOString(), type,
+    text: text.trim(), status: type==="task" ? "open" : null, doneTs: null });
+  persistSite(); renderLog();
+}
+function toggleLogEntry(id){
+  if(!cur) return;
+  const e = cur.log.find(x=>x.id===id);
+  if(!e || e.type!=="task") return;
+  if(e.status==="open"){ e.status="done"; e.doneTs=new Date().toISOString(); }
+  else{ e.status="open"; e.doneTs=null; }
+  persistSite(); renderLog();
+}
+function renderLog(){ renderOpenList(); renderLogFeed(); }
+function renderOpenList(){
+  const wrap = $("openList"); wrap.innerHTML = "";
+  if(!cur) return;
+  const open = cur.log.filter(e=>e.type==="task" && e.status==="open")
+    .sort((a,b)=> a.ts < b.ts ? -1 : 1);
+  if(!open.length){
+    wrap.innerHTML = '<p class="hint" style="padding:0 0 4px;">Nothing open.</p>';
+    return;
+  }
+  open.forEach(e=>{
+    const d = document.createElement("div");
+    d.className = "openitem";
+    d.innerHTML = `<span class="lico open">${ICONS.square}</span>
+      <div><div class="ltxt">${esc(e.text)}</div><div class="lts">logged ${relTime(e.ts)}</div></div>`;
+    d.onclick = ()=>toggleLogEntry(e.id);
+    wrap.appendChild(d);
+  });
+}
+function renderLogFeed(){
+  const wrap = $("logFeed"); wrap.innerHTML = "";
+  if(!cur) return;
+  const entries = cur.log.slice().sort((a,b)=> a.ts < b.ts ? 1 : -1);
+  if(!entries.length){
+    wrap.innerHTML = '<p class="hint" style="padding:0;">No notes or tasks logged yet.</p>';
+    return;
+  }
+  entries.forEach(e=>{
+    const d = document.createElement("div");
+    const isTask = e.type==="task";
+    const closed = isTask && e.status==="done";
+    d.className = "logitem" + (isTask ? " tappable" : "");
+    const icon = !isTask ? ICONS.note : (closed ? ICONS.checksquare : ICONS.square);
+    const icoCls = !isTask ? "note" : (closed ? "done" : "open");
+    const tsLine = fmtLogTs(e.ts) + (closed ? ` · done ${relTime(e.doneTs)}` : "");
+    d.innerHTML = `<span class="lico ${icoCls}">${icon}</span>
+      <div><div class="ltxt ${closed?"closed":""}">${esc(e.text)}</div><div class="lts">${tsLine}</div></div>`;
+    if(isTask) d.onclick = ()=>toggleLogEntry(e.id);
     wrap.appendChild(d);
   });
 }
@@ -1093,6 +1201,19 @@ $("btnHistBack").onclick = closeHistory;
 $("btnHistRefresh").onclick = ()=>loadHistory(true);
 $("search").addEventListener("input", renderList);
 $("siteNotes").addEventListener("change", ()=>{ if(cur){ cur.notes=$("siteNotes").value; persistSite(); } });
+$("logTypeBtn").onclick = ()=>{
+  logType = logType==="note" ? "task" : "note";
+  $("logTypeBtn").textContent = logType==="note" ? "Note" : "Task";
+  $("logTypeBtn").dataset.type = logType;
+};
+function submitLogInput(){
+  const v = $("logInput").value;
+  if(!v.trim()) return;
+  addLogEntry(v, logType);
+  $("logInput").value = "";
+}
+$("logAddBtn").onclick = submitLogInput;
+$("logInput").addEventListener("keydown", e=>{ if(e.key==="Enter") submitLogInput(); });
 
 /* offline shell: service worker keeps the app loadable with no signal */
 if("serviceWorker" in navigator){
