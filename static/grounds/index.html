@@ -188,6 +188,14 @@
     padding:14px 8px; text-align:center;}
   .statcard .num{font-size:21px; font-weight:800; color:var(--accent);}
   .statcard .lbl{font-size:10.5px; color:var(--dim); text-transform:uppercase; letter-spacing:.04em; margin-top:4px;}
+  #periodSeg{margin:12px 12px 8px;}
+  #periodSeg button{flex:1;}
+  .periodnav{display:flex; align-items:center; justify-content:space-between; gap:10px; margin:0 12px 14px;}
+  .periodnav button{flex:0 0 auto; width:46px; height:42px; border-radius:10px; border:1px solid var(--line);
+    background:var(--panel2); color:var(--accent); font-size:17px; font-weight:700;}
+  .periodnav button:active{background:var(--line);}
+  .periodnav .plabel{flex:1; text-align:center; font-weight:800; font-size:15.5px;}
+  .periodnav .ptoday{flex:0 0 auto; width:auto; padding:0 12px; font-size:13px; color:var(--dim);}
 
   .histsection{padding:4px 12px 16px;}
   .histsection h3{margin:14px 2px 8px; font-size:13px; text-transform:uppercase; letter-spacing:.06em; color:var(--dim);}
@@ -729,18 +737,20 @@ function computeSiteTime(events){
   }
   siteTimeMin = map;
 }
+/* month-doc key for `i` months back, in UTC — matches how flushEvents writes the key */
+function eventsMonthKey(i){
+  const b = new Date();
+  const d = new Date(Date.UTC(b.getUTCFullYear(), b.getUTCMonth()-i, 1));
+  return "_events:" + d.toISOString().slice(0,7);
+}
 async function loadSiteTime(){
   /* cache-first for instant + offline badges */
   const cached = await cacheGet("_sttime_events");
   if(cached){ stEvents = cached; computeSiteTime(stEvents);
     if($("scrList").classList.contains("active")) renderList(); }
   try{
-    const now = new Date();
-    const k1 = "_events:" + now.toISOString().slice(0,7);
-    const prev = new Date(now.getFullYear(), now.getMonth()-1, 1);
-    const k0 = "_events:" + prev.toISOString().slice(0,7); // week can span a month boundary
     const evs = [];
-    for(const k of [k0, k1]){
+    for(const k of [eventsMonthKey(1), eventsMonthKey(0)]){  // prev + current (week can span a boundary)
       try{ const d = await apiGet(k); if(d && Array.isArray(d.events)) evs.push(...d.events); }catch(e){}
     }
     stEvents = evs; await cachePut("_sttime_events", evs);
@@ -1453,11 +1463,13 @@ async function loadHistory(force){
   if(histEvents && !force){ renderHistory(histEvents); return; }
   status.style.display = "block"; status.textContent = "Loading…"; content.innerHTML = "";
   try{
-    const keys = await apiListKeys();
-    const evKeys = keys.filter(k=>k.startsWith("_events:")).sort().slice(-3); // last ~3 months
+    /* Fetch the month docs directly. (Don't list keys + filter for "_events:" —
+       the stored KV key is "_events%3A2026-06" with the colon URL-encoded, so the
+       filter matched nothing and History showed zero. This builds the keys the same
+       way flushEvents writes them, so they always line up.) */
     const events = [];
-    for(const k of evKeys){
-      try{ const doc = await apiGet(k); if(doc && Array.isArray(doc.events)) events.push(...doc.events); }
+    for(let i=0;i<15;i++){                       // ~15 months back, for month/year rollups
+      try{ const doc = await apiGet(eventsMonthKey(i)); if(doc && Array.isArray(doc.events)) events.push(...doc.events); }
       catch(e){ /* skip a missing/unreadable month */ }
     }
     events.sort((a,b)=> (a.t||"") < (b.t||"") ? -1 : 1);
@@ -1468,86 +1480,154 @@ async function loadHistory(force){
     status.textContent = "Couldn't load history — check your connection and try Refresh.";
   }
 }
+/* ---- History period model (Day / Week / Month / Year) ---- */
+let histPeriod = "day";          // day | week | month | year
+let histAnchor = new Date();     // a date inside the currently shown period
+
+function visitDate(v){ return new Date(v.aT || v.lT); }
+function visitMinutes(v){
+  if(v.open) return v.aT ? Math.max(0, Math.round((Date.now()-new Date(v.aT))/60000)) : 0;
+  if(v.min!=null) return v.min;
+  return (v.aT && v.lT) ? Math.round((new Date(v.lT)-new Date(v.aT))/60000) : 0;
+}
+function periodRange(period, anchor){
+  const a=new Date(anchor); a.setHours(0,0,0,0);
+  let start, end, label;
+  if(period==="day"){
+    start=new Date(a); end=new Date(a); end.setDate(end.getDate()+1);
+    label=a.toLocaleDateString([], {weekday:"long", month:"short", day:"numeric"});
+  }else if(period==="week"){
+    start=new Date(a); start.setDate(a.getDate()-((a.getDay()+6)%7)); // Monday
+    end=new Date(start); end.setDate(start.getDate()+7);
+    const last=new Date(end); last.setDate(end.getDate()-1);
+    label=`${start.toLocaleDateString([], {month:"short", day:"numeric"})} – ${last.toLocaleDateString([], {month:"short", day:"numeric"})}`;
+  }else if(period==="month"){
+    start=new Date(a.getFullYear(), a.getMonth(), 1);
+    end=new Date(a.getFullYear(), a.getMonth()+1, 1);
+    label=start.toLocaleDateString([], {month:"long", year:"numeric"});
+  }else{
+    start=new Date(a.getFullYear(), 0, 1);
+    end=new Date(a.getFullYear()+1, 0, 1);
+    label=String(a.getFullYear());
+  }
+  return {start, end, label};
+}
+function stepAnchor(dir){
+  const a=new Date(histAnchor);
+  if(histPeriod==="day") a.setDate(a.getDate()+dir);
+  else if(histPeriod==="week") a.setDate(a.getDate()+7*dir);
+  else if(histPeriod==="month") a.setMonth(a.getMonth()+dir);
+  else a.setFullYear(a.getFullYear()+dir);
+  histAnchor=a;
+}
+function sumMin(visits){ return visits.reduce((s,v)=>s+visitMinutes(v),0); }
+function barRow(name, valTxt, min, max){
+  const pct=Math.max(min>0?4:0, Math.round((min/(max||1))*100));
+  return `<div class="barrow"><span class="bnm">${esc(name)}</span>
+    <span class="btrack"><span class="bfill" style="width:${pct}%"></span></span>
+    <span class="bval">${valTxt}</span></div>`;
+}
+function visitRowHtml(v,i){
+  const dTxt=visitDate(v).toLocaleDateString([], {weekday:"short", day:"numeric"});
+  const aTxt=v.aT ? fmtClock(new Date(v.aT).getTime()) : "—";
+  let line, cls="";
+  if(v.open){ line=`${aTxt} → still on site`; cls=" open"; }
+  else{ const lTxt=v.lT?fmtClock(new Date(v.lT).getTime()):"—"; line=`${aTxt} → ${lTxt} · ${fmtMins(visitMinutes(v))}`; }
+  return `<div class="visitrow"><div class="vmeta"><div class="vsite">${esc(v.site||"—")}</div>
+      <div class="vtime${cls}">${dTxt} · ${line}</div></div>
+    <button class="vbtn vedit" data-vi="${i}">Edit</button>
+    <button class="vbtn del vdel" data-vi="${i}">Delete</button></div>`;
+}
+
 function renderHistory(events){
-  const content = $("histContent");
-  /* pair arrive -> leave into visits, same logic as _scripts/grounds_pull.py */
-  const open = {};
-  const visits = [];
-  events.forEach(e=>{
-    if(e.type==="arrive"){ open[e.siteId] = e; }
-    else if(e.type==="leave"){
-      const a = open[e.siteId]; delete open[e.siteId];
-      let min = e.minutes;
-      if(min==null && a) min = Math.round((new Date(e.t) - new Date(a.t))/60000);
-      if(min!=null) visits.push({siteId:e.siteId, site:e.site, t:e.t, min});
-    }
-  });
+  const content=$("histContent");
+  const allVisits=pairVisitsAll(events);
+  const {start,end,label}=periodRange(histPeriod,histAnchor);
+  const inRange=allVisits.filter(v=>{ const d=visitDate(v); return d>=start && d<end; });
+  const totalMin=sumMin(inRange);
+  const siteCount=new Set(inRange.map(v=>v.siteId)).size;
+  const dayCount=new Set(inRange.map(v=>visitDate(v).toDateString())).size;
 
-  const now = new Date();
-  const weekStart = new Date(now); weekStart.setDate(now.getDate()-((now.getDay()+6)%7)); weekStart.setHours(0,0,0,0);
-  const thisWeek = visits.filter(v=> new Date(v.t) >= weekStart);
-  const totalMin = thisWeek.reduce((s,v)=>s+v.min,0);
-  const dayCount = new Set(thisWeek.map(v=>new Date(v.t).toDateString())).size;
-  const siteCount = new Set(thisWeek.map(v=>v.siteId)).size;
+  /* period selector + stepper */
+  let html=`<div class="seg" id="periodSeg">`
+    + ["day","week","month","year"].map(p=>`<button data-p="${p}" class="${p===histPeriod?'on':''}">${p[0].toUpperCase()+p.slice(1)}</button>`).join("")
+    + `</div>`;
+  html+=`<div class="periodnav"><button id="periodPrev" aria-label="Previous">◀</button>
+      <span class="plabel">${esc(label)}</span>
+      <button id="periodNext" aria-label="Next">▶</button></div>`;
 
-  const bySite = {};
-  thisWeek.forEach(v=>{ (bySite[v.siteId] ??= {site:v.site, min:0}).min += v.min; });
-  const top = Object.values(bySite).sort((a,b)=>b.min-a.min).slice(0,8);
-  const maxMin = top.length ? top[0].min : 1;
-
-  let html = `<div class="statgrid">
-      <div class="statcard"><div class="num">${(totalMin/60).toFixed(1)}</div><div class="lbl">Hours this week</div></div>
-      <div class="statcard"><div class="num">${siteCount}</div><div class="lbl">Sites visited</div></div>
-      <div class="statcard"><div class="num">${dayCount}</div><div class="lbl">Days logged</div></div>
+  /* stat cards */
+  html+=`<div class="statgrid">
+      <div class="statcard"><div class="num">${(totalMin/60).toFixed(1)}</div><div class="lbl">Hours</div></div>
+      <div class="statcard"><div class="num">${siteCount}</div><div class="lbl">Sites</div></div>
+      ${histPeriod!=="day"?`<div class="statcard"><div class="num">${dayCount}</div><div class="lbl">Days worked</div></div>`:""}
     </div>`;
 
-  html += `<div class="histsection"><h3>Time by site — this week</h3>`;
-  if(!top.length){ html += `<p class="hint" style="padding:0;">No arrive/leave visits logged yet this week.</p>`; }
-  else top.forEach(s=>{
-    const pct = Math.max(4, Math.round(s.min/maxMin*100));
-    html += `<div class="barrow"><span class="bnm">${esc(s.site||"—")}</span>
-      <span class="btrack"><span class="bfill" style="width:${pct}%"></span></span>
-      <span class="bval">${(s.min/60).toFixed(1)}h</span></div>`;
-  });
-  html += `</div>`;
+  /* minutes by site — for every period (this is the paperwork unit) */
+  const bySite={};
+  inRange.forEach(v=>{ (bySite[v.siteId] ??= {site:v.site, min:0}).min += visitMinutes(v); });
+  const sites=Object.values(bySite).sort((a,b)=>b.min-a.min);
+  const maxSite=sites.length?sites[0].min:1;
+  html+=`<div class="histsection"><h3>Minutes by site</h3>`;
+  if(!sites.length) html+=`<p class="hint" style="padding:0;">No visits in this ${histPeriod}.</p>`;
+  else sites.forEach(s=> html+=barRow(s.site||"—", fmtMins(s.min), s.min, maxSite));
+  html+=`</div>`;
 
-  html += `<div class="histsection"><h3>Visits this week</h3>`;
-  html += `<button class="addvisit" id="histAddVisit">+ Add a visit</button>`;
-  histVisits = pairVisitsAll(events).filter(v=> new Date(v.aT||v.lT) >= weekStart).reverse();
-  if(!histVisits.length){ html += `<p class="hint" style="padding:0;">No visits logged yet this week.</p>`; }
-  else histVisits.forEach((v,i)=>{
-    const dTxt = new Date(v.aT||v.lT).toLocaleDateString([], {weekday:"short"});
-    const aTxt = v.aT ? fmtClock(new Date(v.aT).getTime()) : "—";
-    let line, cls="";
-    if(v.open){ line = `${aTxt} → still on site`; cls=" open"; }
-    else{
-      const lTxt = v.lT ? fmtClock(new Date(v.lT).getTime()) : "—";
-      const min = (v.min!=null) ? v.min : Math.round((new Date(v.lT)-new Date(v.aT))/60000);
-      line = `${aTxt} → ${lTxt} · ${fmtMins(min)}`;
-    }
-    html += `<div class="visitrow">
-        <div class="vmeta"><div class="vsite">${esc(v.site||"—")}</div>
-          <div class="vtime${cls}">${dTxt} · ${line}</div></div>
-        <button class="vbtn vedit" data-vi="${i}">Edit</button>
-        <button class="vbtn del vdel" data-vi="${i}">Delete</button>
-      </div>`;
-  });
-  html += `</div>`;
+  /* period-specific breakdown */
+  if(histPeriod==="day"){
+    html+=`<div class="histsection"><h3>Visits</h3>`;
+    html+=`<button class="addvisit" id="histAddVisit">+ Add a visit</button>`;
+    histVisits=inRange.slice().sort((a,b)=>visitDate(a)-visitDate(b));
+    if(!histVisits.length) html+=`<p class="hint" style="padding:0;">No visits this day.</p>`;
+    else histVisits.forEach((v,i)=> html+=visitRowHtml(v,i));
+    html+=`</div>`;
+  }else if(histPeriod==="week"){
+    html+=`<div class="histsection"><h3>By day</h3>`;
+    let maxD=1; const dayRows=[];
+    for(let i=0;i<7;i++){ const d=new Date(start); d.setDate(start.getDate()+i);
+      const d2=new Date(d); d2.setDate(d.getDate()+1);
+      const min=sumMin(inRange.filter(v=>{const x=visitDate(v); return x>=d&&x<d2;}));
+      dayRows.push({d,min}); maxD=Math.max(maxD,min); }
+    dayRows.forEach(r=> html+=barRow(r.d.toLocaleDateString([], {weekday:"short", day:"numeric"}), r.min?fmtMins(r.min):"—", r.min, maxD));
+    html+=`</div>`;
+    html+=`<div class="histsection"><h3>Visits</h3>`;
+    html+=`<button class="addvisit" id="histAddVisit">+ Add a visit</button>`;
+    histVisits=inRange.slice().sort((a,b)=>visitDate(b)-visitDate(a));
+    if(!histVisits.length) html+=`<p class="hint" style="padding:0;">No visits this week.</p>`;
+    else histVisits.forEach((v,i)=> html+=visitRowHtml(v,i));
+    html+=`</div>`;
+  }else if(histPeriod==="month"){
+    html+=`<div class="histsection"><h3>By week</h3>`;
+    let cur=new Date(start); cur.setDate(start.getDate()-((start.getDay()+6)%7));
+    let maxW=1; const wkRows=[];
+    while(cur<end){ const wEnd=new Date(cur); wEnd.setDate(cur.getDate()+7);
+      const min=sumMin(inRange.filter(v=>{const x=visitDate(v); return x>=cur&&x<wEnd;}));
+      wkRows.push({lbl:cur.toLocaleDateString([], {month:"short", day:"numeric"}), min}); maxW=Math.max(maxW,min);
+      cur=wEnd; }
+    wkRows.forEach(r=> html+=barRow("wk "+r.lbl, r.min?(r.min/60).toFixed(1)+"h":"—", r.min, maxW));
+    html+=`</div>`;
+  }else{ /* year */
+    html+=`<div class="histsection"><h3>By month</h3>`;
+    let maxM=1; const mRows=[];
+    for(let m=0;m<12;m++){ const s=new Date(start.getFullYear(), m, 1), e=new Date(start.getFullYear(), m+1, 1);
+      const min=sumMin(inRange.filter(v=>{const x=visitDate(v); return x>=s&&x<e;}));
+      mRows.push({lbl:s.toLocaleDateString([], {month:"short"}), min}); maxM=Math.max(maxM,min); }
+    mRows.forEach(r=> html+=barRow(r.lbl, r.min?(r.min/60).toFixed(1)+"h":"—", r.min, maxM));
+    html+=`</div>`;
+  }
 
-  html += `<div class="histsection"><h3>Weekly snapshots</h3>`;
-  const hist = (INDEX && Array.isArray(INDEX.history)) ? INDEX.history.slice().reverse() : [];
-  if(!hist.length){ html += `<p class="hint" style="padding:0;">No weeks logged yet — use “Start new week” from the menu to begin tracking.</p>`; }
-  else hist.slice(0,10).forEach(w=>{
-    const flagged = (w.sites||[]).flatMap(s=>s.flagged||[]);
-    const totalDone = (w.sites||[]).reduce((s,x)=>s+(x.done||0),0);
-    html += `<div class="weekrow"><div class="wtop"><span>${esc(w.week)} → ${esc(w.endedAt)}</span><span>${totalDone} zones done</span></div>`
-      + (flagged.length ? `<div class="wnote">⚠ Flagged: ${flagged.map(esc).join(", ")}</div>` : "")
-      + `</div>`;
-  });
-  html += `</div>`;
+  /* all-time running total (bounded by the months fetched) */
+  const allMin=sumMin(allVisits), allSites=new Set(allVisits.map(v=>v.siteId)).size;
+  html+=`<p class="hint" style="text-align:center; padding-top:6px;">All-time logged: <b>${(allMin/60).toFixed(1)} h</b> across ${allSites} sites</p>`;
 
-  content.innerHTML = html;
-  const addBtn=$("histAddVisit"); if(addBtn) addBtn.onclick=()=>openVisitEditor({mode:"add"});
+  content.innerHTML=html;
+
+  /* wiring */
+  $("periodSeg").querySelectorAll("button").forEach(b=> b.onclick=()=>{ histPeriod=b.dataset.p; renderHistory(events); });
+  $("periodPrev").onclick=()=>{ stepAnchor(-1); renderHistory(events); };
+  $("periodNext").onclick=()=>{ stepAnchor(1);  renderHistory(events); };
+  const addBtn=$("histAddVisit");
+  if(addBtn) addBtn.onclick=()=>openVisitEditor({mode:"add", date:isoToLocalDate(periodRange(histPeriod,histAnchor).start.toISOString())});
   content.querySelectorAll(".vedit").forEach(b=> b.onclick=()=>openEditFromVisit(histVisits[+b.dataset.vi]));
   content.querySelectorAll(".vdel").forEach(b=> b.onclick=()=>{
     const v=histVisits[+b.dataset.vi]; editingVisit={aT:v.aT, lT:v.lT, siteId:v.siteId}; deleteVisit();
