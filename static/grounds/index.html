@@ -90,6 +90,14 @@
   .badge.alldone{background:rgba(63,174,90,.18); color:var(--done);}
   .badge.photo{background:rgba(77,159,236,.15); color:var(--accent);}
   .badge.slope{background:rgba(224,82,82,.18); color:#ff9d9d;}
+  .badge.time{display:inline-flex; flex-direction:column; align-items:flex-end; gap:1px;
+    line-height:1.12; padding:4px 9px; background:rgba(77,159,236,.14); color:var(--accent);}
+  .badge.time .tt{font-size:12.5px; font-weight:800; letter-spacing:.01em;}
+  .badge.time .tw{font-size:10px; font-weight:600; color:var(--dim);}
+  .badge.time.wkonly{background:var(--panel2);}
+  .badge.time.wkonly .tt{color:var(--dim); font-weight:700;}
+  .badge.time.live{background:rgba(63,174,90,.20); color:var(--done);}
+  .badge.time.live .tt::before{content:"● "; font-size:9px; vertical-align:1px;}
   .dirbtn{flex:0 0 auto; width:40px; height:40px; min-width:40px; margin:-5px -5px -5px 3px;
     display:inline-flex; align-items:center; justify-content:center; border-radius:10px;
     background:var(--panel2); color:var(--accent); border:1px solid var(--line); transition:transform .08s, background .12s;}
@@ -412,6 +420,8 @@ const TYPE_ABBR = {"Mowing":"M","Trimming":"T","Blowing":"B","Garden bed":"G","O
 
 let INDEX = null;       // _index doc
 let cur = null;         // current full site doc
+let stEvents = null;    // cached arrive/leave events for per-site time badges
+let siteTimeMin = {};   // {siteId:{today,week}} minutes, recomputed from stEvents + live visit
 let mode = "track";
 let zoom = 1;
 let drawPts = [];
@@ -569,7 +579,16 @@ function logEvent(type, z){
   scheduleEvtFlush();
 }
 function scheduleEvtFlush(){ clearTimeout(evtTimer); evtTimer = setTimeout(flushEvents, 3000); }
-function evtPush(evt){ evtQueue.push(evt); cachePut("_evtq", evtQueue); scheduleEvtFlush(); }
+function evtPush(evt){
+  evtQueue.push(evt); cachePut("_evtq", evtQueue); scheduleEvtFlush();
+  /* keep the per-site time badges live (works offline — server flush catches up later) */
+  if(evt.type==="arrive" || evt.type==="leave"){
+    if(!Array.isArray(stEvents)) stEvents = [];
+    stEvents.push(evt); cachePut("_sttime_events", stEvents);
+    computeSiteTime(stEvents);
+    if($("scrList").classList.contains("active")) renderList();
+  }
+}
 
 /* ---------------- arrive/leave time tracking ---------------- */
 function getVisit(){ try{ return JSON.parse(localStorage.getItem("gt.visit")); }catch(e){ return null; } }
@@ -605,7 +624,11 @@ function renderVisit(){
     info.textContent = v ? `Still checked in at ${v.site}` : "";
   }
 }
-setInterval(()=>{ if(cur) renderVisit(); }, 60000);
+setInterval(()=>{
+  if(cur) renderVisit();
+  /* keep the live on-site time badge ticking up on the list */
+  if($("scrList").classList.contains("active")){ computeSiteTime(stEvents||[]); renderList(); }
+}, 60000);
 let evtFlushing = false;
 async function flushEvents(){
   if(evtFlushing || !evtQueue.length) return;
@@ -626,6 +649,67 @@ async function flushEvents(){
     await cachePut("_evtq", evtQueue);
   }catch(e){ /* offline/weak signal — queue persists, retried on online/sync/next event */ }
   finally{ evtFlushing = false; }
+}
+
+/* ---------------- per-site time (today / this week) for the list badges ---------------- */
+function fmtMins(m){
+  m = Math.round(m);
+  if(m < 60) return m + "m";
+  const h = Math.floor(m/60), mm = m%60;
+  return mm ? `${h}h${String(mm).padStart(2,"0")}` : `${h}h`;
+}
+function dayStartTs(){ const x = new Date(); x.setHours(0,0,0,0); return x; }
+function weekStartTs(){ const n = new Date(); const x = new Date(n);
+  x.setDate(n.getDate()-((n.getDay()+6)%7)); x.setHours(0,0,0,0); return x; } // Monday 00:00
+/* pair arrive->leave into visits (same logic as renderHistory / grounds_pull.py),
+   sum minutes per site for today and this week, then add any live open visit. */
+function computeSiteTime(events){
+  const open = {}, visits = [];
+  (events||[]).forEach(e=>{
+    if(e.type==="arrive"){ open[e.siteId] = e; }
+    else if(e.type==="leave"){
+      const a = open[e.siteId]; delete open[e.siteId];
+      let min = e.minutes;
+      if(min==null && a) min = Math.round((new Date(e.t) - new Date(a.t))/60000);
+      if(min!=null) visits.push({ siteId:e.siteId, t:e.t, min });
+    }
+  });
+  const ws = weekStartTs(), ds = dayStartTs(), map = {};
+  visits.forEach(v=>{
+    const t = new Date(v.t);
+    if(t < ws) return;
+    const slot = (map[v.siteId] ??= {today:0, week:0});
+    slot.week += v.min;
+    if(t >= ds) slot.today += v.min;
+  });
+  /* live open visit (checked in, not yet left) — count it as it ticks */
+  const cv = getVisit();
+  if(cv && cv.t){
+    const start = new Date(cv.t), min = Math.max(0, (Date.now()-cv.t)/60000);
+    const slot = (map[cv.siteId] ??= {today:0, week:0});
+    if(start >= ws) slot.week += min;
+    if(start >= ds) slot.today += min;
+  }
+  siteTimeMin = map;
+}
+async function loadSiteTime(){
+  /* cache-first for instant + offline badges */
+  const cached = await cacheGet("_sttime_events");
+  if(cached){ stEvents = cached; computeSiteTime(stEvents);
+    if($("scrList").classList.contains("active")) renderList(); }
+  try{
+    const now = new Date();
+    const k1 = "_events:" + now.toISOString().slice(0,7);
+    const prev = new Date(now.getFullYear(), now.getMonth()-1, 1);
+    const k0 = "_events:" + prev.toISOString().slice(0,7); // week can span a month boundary
+    const evs = [];
+    for(const k of [k0, k1]){
+      try{ const d = await apiGet(k); if(d && Array.isArray(d.events)) evs.push(...d.events); }catch(e){}
+    }
+    stEvents = evs; await cachePut("_sttime_events", evs);
+    computeSiteTime(evs);
+    if($("scrList").classList.contains("active")) renderList();
+  }catch(e){ /* offline — keep cached values */ }
 }
 
 /* ---------------- index ---------------- */
@@ -696,6 +780,7 @@ async function enterApp(){
   renderList();
   flushDirty();
   loadEvtQueue();
+  loadSiteTime();
   warmCache();
 }
 
@@ -721,9 +806,22 @@ function siteRow(s){
   if(total===0) badge = `<span class="badge none">no zones</span>`;
   else if(done===total) badge = `<span class="badge alldone">✓ ${done}/${total}</span>`;
   else badge = `<span class="badge partial">${done}/${total}${flag?" ⚠":""}</span>`;
+  const st = siteTimeMin[s.id];
+  const liveV = getVisit();
+  const isLive = !!(liveV && liveV.siteId===s.id);
+  let timeBadge = "";
+  if(st && (st.today>0 || st.week>0)){
+    if(st.today>0){
+      timeBadge = `<span class="badge time${isLive?" live":""}"><span class="tt">${fmtMins(st.today)}</span>`
+        + `<span class="tw">wk ${fmtMins(st.week)}</span></span>`;
+    }else{
+      timeBadge = `<span class="badge time wkonly"><span class="tt">wk ${fmtMins(st.week)}</span></span>`;
+    }
+  }
   const b = document.createElement("button");
   b.className = "siterow";
   b.innerHTML = `<span class="nm">${esc(s.name)}</span>`
+    + timeBadge
     + (s.slope?'<span class="badge slope">⚠</span>':"")
     + (s.hasPhoto?'<span class="badge photo">📷</span>':"")
     + badge
