@@ -210,10 +210,26 @@
     max-height:85vh; overflow:auto;}
   .sheet h2{margin:0 0 14px; font-size:17px;}
   .sheet label{display:block; font-size:13px; color:var(--dim); margin:12px 0 5px;}
-  .sheet input[type=text], .sheet select{width:100%; padding:11px; font-size:16px; border-radius:10px;
+  .sheet input[type=text], .sheet select, .sheet input[type=date], .sheet input[type=time]{
+    width:100%; padding:11px; font-size:16px; border-radius:10px;
     border:1px solid var(--line); background:var(--panel2); color:var(--text);}
   .sheetbtns{display:flex; gap:10px; margin-top:18px;}
   .sheetbtns .hbtn{flex:1; padding:13px; font-size:15px; text-align:center;}
+  .timerow{display:flex; gap:10px;}
+  .timerow > div{flex:1;}
+  .vopen{display:flex; align-items:center; gap:9px; margin-top:13px; font-size:14.5px; color:var(--text);}
+  .vopen input[type=checkbox]{width:20px; height:20px; accent-color:var(--accent);}
+  .visitrow{display:flex; align-items:center; gap:9px; background:var(--panel); border:1px solid var(--line);
+    border-radius:12px; padding:10px 12px; margin-bottom:8px; box-shadow:var(--shadow);}
+  .visitrow .vmeta{flex:1; min-width:0;}
+  .visitrow .vsite{font-size:14.5px; font-weight:700; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+  .visitrow .vtime{font-size:12.5px; color:var(--dim); margin-top:2px;}
+  .visitrow .vtime.open{color:var(--flag); font-weight:700;}
+  .vbtn{flex:0 0 auto; padding:8px 12px; font-size:13px; font-weight:700; border-radius:9px;
+    border:1px solid var(--line); background:var(--panel2); color:var(--accent);}
+  .vbtn.del{color:var(--todo);}
+  .addvisit{width:100%; padding:12px; font-size:14.5px; font-weight:700; border-radius:11px;
+    border:1px dashed var(--line); background:var(--panel2); color:var(--accent); margin-bottom:12px;}
 
   .statusbtns{display:flex; gap:8px; margin-top:4px;}
   .statusbtns button{flex:1; padding:12px 4px; min-height:var(--tap); border-radius:11px; border:2px solid transparent;
@@ -272,6 +288,7 @@
     <div id="visitBar">
       <button class="hbtn primary" id="btnVisit">Arrive</button>
       <button class="hbtn" id="btnDirections" title="Directions"><svg class="icon" viewBox="0 0 24 24"><path d="M3 11l18-8-8 18-2-8-8-2z"/></svg>Directions</button>
+      <button class="hbtn" id="btnEditTimes" title="Add or fix a visit time">✎ Time</button>
       <span id="visitInfo"></span>
       <span class="badge slope" id="slopeChip" style="display:none;">⚠ steep slope</span>
     </div>
@@ -395,6 +412,26 @@
       <button class="hbtn" id="pClose">Close</button>
     </div>
     <p class="hint">Tip: screenshot Apple/Google Maps in satellite view, crop to the property, then pick it here from Photos. Photos are auto-compressed and synced. Replacing a photo keeps your zones.</p>
+  </div>
+
+  <div class="sheet" id="shVisit" style="display:none;">
+    <h2 id="visitSheetTitle">Edit visit</h2>
+    <label>Site</label>
+    <select id="vSite"></select>
+    <label>Date</label>
+    <input type="date" id="vDate">
+    <div class="timerow">
+      <div><label>Arrived</label><input type="time" id="vArrive"></div>
+      <div><label>Left</label><input type="time" id="vLeave"></div>
+    </div>
+    <label class="vopen"><input type="checkbox" id="vOpen"> Still on site (no leave time yet)</label>
+    <p class="hint" id="vDur" style="padding:8px 2px 0;"></p>
+    <p class="hint" id="vErr" style="padding:4px 2px 0; color:var(--todo); display:none;"></p>
+    <div class="sheetbtns">
+      <button class="hbtn danger" id="vDelete">Delete</button>
+      <button class="hbtn" id="vCancel">Cancel</button>
+      <button class="hbtn primary" id="vSave">Save</button>
+    </div>
   </div>
 </div>
 
@@ -711,6 +748,171 @@ async function loadSiteTime(){
     if($("scrList").classList.contains("active")) renderList();
   }catch(e){ /* offline — keep cached values */ }
 }
+
+/* ---------------- manual visit add / edit / close / delete ---------------- */
+let editingVisit = null;   // {aT,lT,siteId} when editing an existing visit; null = adding
+let histVisits = [];       // visits currently shown in the History edit list (index = data-vi)
+
+/* pair arrive->leave into visits, INCLUDING still-open ones (no leave yet) */
+function pairVisitsAll(events){
+  const evs = (events||[]).slice().sort((a,b)=> (a.t||"") < (b.t||"") ? -1 : 1);
+  const open = {}, visits = [];
+  evs.forEach(e=>{
+    if(e.type==="arrive"){
+      if(open[e.siteId]){ const a=open[e.siteId]; visits.push({siteId:a.siteId, site:a.site, aT:a.t, lT:null, open:true}); }
+      open[e.siteId] = e;
+    }else if(e.type==="leave"){
+      const a = open[e.siteId]; delete open[e.siteId];
+      let min = e.minutes;
+      if(min==null && a) min = Math.round((new Date(e.t)-new Date(a.t))/60000);
+      visits.push({siteId:e.siteId, site:e.site||(a&&a.site)||"", aT:a?a.t:null, lT:e.t, min, open:false});
+    }
+  });
+  Object.values(open).forEach(a=> visits.push({siteId:a.siteId, site:a.site, aT:a.t, lT:null, open:true}));
+  visits.sort((a,b)=> (a.aT||a.lT||"") < (b.aT||b.lT||"") ? -1 : 1);
+  return visits;
+}
+
+/* local date/time <-> ISO (device-local, i.e. Abbotsford time) */
+function isoToLocalDate(iso){ const d=new Date(iso);
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`; }
+function isoToLocalTime(iso){ const d=new Date(iso);
+  return `${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`; }
+function localToIso(dateStr,timeStr){
+  const [y,mo,da]=dateStr.split("-").map(Number), [h,mi]=timeStr.split(":").map(Number);
+  return new Date(y, mo-1, da, h, mi, 0, 0).toISOString();
+}
+function monthKeyOf(iso){ return "_events:" + iso.slice(0,7); }
+
+function populateVSite(selId){
+  const sel=$("vSite");
+  const sites=[...INDEX.sites].sort((a,b)=>a.name.localeCompare(b.name));
+  sel.innerHTML = sites.map(s=>`<option value="${s.id}">${esc(s.name)}</option>`).join("");
+  if(selId) sel.value=selId;
+}
+function showVErr(m){ $("vErr").textContent=m; $("vErr").style.display="block"; return false; }
+function updateVDur(){
+  const d=$("vDate").value, a=$("vArrive").value, l=$("vLeave").value;
+  if($("vOpen").checked){ $("vDur").textContent="Open visit — counts as time until you set a leave time."; return; }
+  if(d&&a&&l){
+    const min=Math.round((new Date(localToIso(d,l))-new Date(localToIso(d,a)))/60000);
+    $("vDur").textContent = min>=0 ? `Duration: ${fmtMins(min)}` : "⚠ Leave time is before arrive time.";
+  }else $("vDur").textContent="";
+}
+function openVisitEditor(opts){
+  const add = opts.mode==="add";
+  $("visitSheetTitle").textContent = add ? "Add a visit" : "Edit visit";
+  populateVSite(opts.siteId);
+  $("vSite").disabled = !add;                 // lock the site when editing an existing visit
+  const nowIso = new Date().toISOString();
+  $("vDate").value   = opts.date   || isoToLocalDate(nowIso);
+  $("vArrive").value = opts.arrive || isoToLocalTime(nowIso);
+  $("vLeave").value  = opts.leave  || "";
+  $("vOpen").checked = !!opts.open;
+  $("vLeave").disabled = !!opts.open;
+  $("vDelete").style.display = add ? "none" : "block";
+  $("vErr").style.display="none";
+  editingVisit = add ? null : {aT:opts.aT||null, lT:opts.lT||null, siteId:opts.siteId};
+  updateVDur();
+  showSheet("shVisit");
+}
+function openEditFromVisit(v){
+  openVisitEditor({ mode:"edit", siteId:v.siteId, aT:v.aT, lT:v.lT, open:v.open,
+    date:isoToLocalDate(v.aT||v.lT),
+    arrive:v.aT?isoToLocalTime(v.aT):"", leave:v.lT?isoToLocalTime(v.lT):"" });
+}
+
+/* read-modify-write one month doc; throws if the server can't be reached (so we never clobber) */
+async function editMonthDoc(monthKey, mutate){
+  let existing;
+  try{ existing = await apiGet(monthKey); }       // throws on network failure
+  catch(e){ throw new Error("net"); }
+  const doc = (existing && Array.isArray(existing.events)) ? existing : {events:[]};
+  doc.events = mutate(doc.events.slice());
+  doc.events.sort((a,b)=> (a.t||"") < (b.t||"") ? -1 : 1);
+  await apiPut(monthKey, doc);                     // may throw -> propagate
+}
+async function removeOldVisitEvents(){
+  if(!editingVisit) return;
+  if(editingVisit.aT) await editMonthDoc(monthKeyOf(editingVisit.aT),
+    evs=>evs.filter(e=>!(e.type==="arrive" && e.t===editingVisit.aT)));
+  if(editingVisit.lT) await editMonthDoc(monthKeyOf(editingVisit.lT),
+    evs=>evs.filter(e=>!(e.type==="leave" && e.t===editingVisit.lT)));
+}
+async function ensureSyncedBeforeEdit(){
+  await flushEvents();
+  if(evtQueue.length){ showVErr("You have unsynced taps — open the menu, tap Sync, then try again."); return false; }
+  return true;
+}
+async function afterVisitChange(){
+  await loadSiteTime();                    // refetch months, recompute badges, re-render list
+  histEvents = null;                       // force History to rebuild from fresh data
+  if($("scrHistory").classList.contains("active")) await loadHistory(true);
+}
+async function saveVisit(){
+  const siteId=$("vSite").value;
+  const site=((INDEX.sites.find(s=>s.id===siteId)||{}).name)||"";
+  const dateStr=$("vDate").value, aStr=$("vArrive").value;
+  const isOpen=$("vOpen").checked, lStr=$("vLeave").value;
+  $("vErr").style.display="none";
+  if(!siteId||!dateStr||!aStr) return showVErr("Pick a site, a date and an arrive time.");
+  const arriveIso=localToIso(dateStr,aStr);
+  let leaveIso=null, minutes=null;
+  if(!isOpen){
+    if(!lStr) return showVErr("Set a leave time, or tick “still on site”.");
+    leaveIso=localToIso(dateStr,lStr);
+    minutes=Math.round((new Date(leaveIso)-new Date(arriveIso))/60000);
+    if(minutes<0) return showVErr("Leave time is before the arrive time.");
+  }
+  if(!(await ensureSyncedBeforeEdit())) return;
+  $("vSave").disabled=true;
+  try{
+    await removeOldVisitEvents();
+    await editMonthDoc(monthKeyOf(arriveIso), evs=>{ evs.push({t:arriveIso,type:"arrive",siteId,site}); return evs; });
+    if(leaveIso) await editMonthDoc(monthKeyOf(leaveIso), evs=>{ evs.push({t:leaveIso,type:"leave",siteId,site,minutes}); return evs; });
+  }catch(e){ $("vSave").disabled=false; return showVErr("Couldn’t reach the server — check your signal and try again."); }
+  $("vSave").disabled=false;
+  /* keep the live on-site state in sync so the badge doesn't double-count */
+  const lv=getVisit();
+  if(lv && lv.siteId===siteId){
+    if(isOpen) setVisit({siteId, site, t:new Date(arriveIso).getTime()});
+    else setVisit(null);
+    if(cur) renderVisit();
+  }
+  hideSheets();
+  toast(editingVisit ? "Visit updated" : "Visit added");
+  await afterVisitChange();
+}
+async function deleteVisit(){
+  if(!editingVisit) return;
+  if(!confirm("Delete this visit? Its time will stop counting.")) return;
+  if(!(await ensureSyncedBeforeEdit())) return;
+  try{ await removeOldVisitEvents(); }
+  catch(e){ return showVErr("Couldn’t reach the server — check your signal and try again."); }
+  const lv=getVisit();
+  if(lv && lv.siteId===editingVisit.siteId){ setVisit(null); if(cur) renderVisit(); }
+  hideSheets();
+  toast("Visit deleted");
+  await afterVisitChange();
+}
+
+/* wiring */
+$("vCancel").onclick = hideSheets;
+$("vSave").onclick   = saveVisit;
+$("vDelete").onclick = deleteVisit;
+$("vOpen").onchange  = ()=>{ $("vLeave").disabled=$("vOpen").checked; if($("vOpen").checked)$("vLeave").value=""; updateVDur(); };
+["vDate","vArrive","vLeave"].forEach(id=>$(id).addEventListener("input",updateVDur));
+$("btnEditTimes").onclick = ()=>{
+  if(!cur) return;
+  const openV = pairVisitsAll(stEvents||[]).find(v=>v.open && v.siteId===cur.id);
+  if(openV){ openEditFromVisit(openV); }                       // fix/close the open visit
+  else{
+    const lv=getVisit();                                       // live but not yet on server? prefill its arrive
+    if(lv && lv.siteId===cur.id){ const iso=new Date(lv.t).toISOString();
+      openVisitEditor({mode:"add", siteId:cur.id, date:isoToLocalDate(iso), arrive:isoToLocalTime(iso)}); }
+    else openVisitEditor({mode:"add", siteId:cur.id});         // add a brand-new visit for this site
+  }
+};
 
 /* ---------------- index ---------------- */
 function newIndex(){
@@ -1154,7 +1356,7 @@ $("zDelete").onclick = ()=>{
 
 /* ---------------- sheets/menu ---------------- */
 function showSheet(id){
-  ["shZone","shMenu","shPhoto"].forEach(s=>$(s).style.display = s===id?"block":"none");
+  ["shZone","shMenu","shPhoto","shVisit"].forEach(s=>$(s).style.display = s===id?"block":"none");
   $("overlay").classList.add("on");
 }
 function hideSheets(){ $("overlay").classList.remove("on"); }
@@ -1309,6 +1511,29 @@ function renderHistory(events){
   });
   html += `</div>`;
 
+  html += `<div class="histsection"><h3>Visits this week</h3>`;
+  html += `<button class="addvisit" id="histAddVisit">+ Add a visit</button>`;
+  histVisits = pairVisitsAll(events).filter(v=> new Date(v.aT||v.lT) >= weekStart).reverse();
+  if(!histVisits.length){ html += `<p class="hint" style="padding:0;">No visits logged yet this week.</p>`; }
+  else histVisits.forEach((v,i)=>{
+    const dTxt = new Date(v.aT||v.lT).toLocaleDateString([], {weekday:"short"});
+    const aTxt = v.aT ? fmtClock(new Date(v.aT).getTime()) : "—";
+    let line, cls="";
+    if(v.open){ line = `${aTxt} → still on site`; cls=" open"; }
+    else{
+      const lTxt = v.lT ? fmtClock(new Date(v.lT).getTime()) : "—";
+      const min = (v.min!=null) ? v.min : Math.round((new Date(v.lT)-new Date(v.aT))/60000);
+      line = `${aTxt} → ${lTxt} · ${fmtMins(min)}`;
+    }
+    html += `<div class="visitrow">
+        <div class="vmeta"><div class="vsite">${esc(v.site||"—")}</div>
+          <div class="vtime${cls}">${dTxt} · ${line}</div></div>
+        <button class="vbtn vedit" data-vi="${i}">Edit</button>
+        <button class="vbtn del vdel" data-vi="${i}">Delete</button>
+      </div>`;
+  });
+  html += `</div>`;
+
   html += `<div class="histsection"><h3>Weekly snapshots</h3>`;
   const hist = (INDEX && Array.isArray(INDEX.history)) ? INDEX.history.slice().reverse() : [];
   if(!hist.length){ html += `<p class="hint" style="padding:0;">No weeks logged yet — use “Start new week” from the menu to begin tracking.</p>`; }
@@ -1322,6 +1547,11 @@ function renderHistory(events){
   html += `</div>`;
 
   content.innerHTML = html;
+  const addBtn=$("histAddVisit"); if(addBtn) addBtn.onclick=()=>openVisitEditor({mode:"add"});
+  content.querySelectorAll(".vedit").forEach(b=> b.onclick=()=>openEditFromVisit(histVisits[+b.dataset.vi]));
+  content.querySelectorAll(".vdel").forEach(b=> b.onclick=()=>{
+    const v=histVisits[+b.dataset.vi]; editingVisit={aT:v.aT, lT:v.lT, siteId:v.siteId}; deleteVisit();
+  });
 }
 
 /* ---------------- misc wiring ---------------- */
