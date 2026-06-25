@@ -1411,7 +1411,7 @@ $("zDelete").onclick = ()=>{
 
 /* ---------------- sheets/menu ---------------- */
 function showSheet(id){
-  ["shZone","shMenu","shPhoto","shVisit"].forEach(s=>$(s).style.display = s===id?"block":"none");
+  ["shZone","shMenu","shPhoto","shVisit","shAtt"].forEach(s=>$(s).style.display = s===id?"block":"none");
   $("overlay").classList.add("on");
 }
 function hideSheets(){ $("overlay").classList.remove("on"); }
