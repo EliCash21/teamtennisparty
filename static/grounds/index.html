@@ -152,6 +152,24 @@
   .nophoto{padding:40px 20px; text-align:center; color:var(--dim);}
   .nophoto p{margin:0 0 18px; font-size:15px; line-height:1.5;}
 
+  /* attachments (photos & files per site) */
+  .attadd{display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px;}
+  .attgrid{display:grid; grid-template-columns:repeat(auto-fill,minmax(104px,1fr)); gap:8px;}
+  .atttile{position:relative; border:1px solid var(--line); border-radius:10px; overflow:hidden;
+    background:var(--card2,rgba(255,255,255,.03)); cursor:pointer; min-height:104px; display:flex; flex-direction:column;}
+  .atttile .thumb{width:100%; height:104px; object-fit:cover; display:block; background:#000;}
+  .atttile .docthumb{width:100%; height:104px; display:flex; align-items:center; justify-content:center;
+    font-size:30px; background:rgba(77,159,236,.10);}
+  .atttile .docthumb .ext{position:absolute; bottom:34px; font-size:10px; font-weight:800; letter-spacing:.05em;
+    color:var(--accent); text-transform:uppercase;}
+  .atttile .cap{padding:5px 7px; font-size:11px; line-height:1.3; color:var(--text);}
+  .atttile .cap .when{display:block; color:var(--dim); font-size:10px; margin-top:2px;}
+  .atttile .note{white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+  .attempty{color:var(--dim); font-size:13px; padding:4px 2px;}
+  #attView img{display:block; width:100%; border-radius:10px; background:#000;}
+  #attView .docopen{display:flex; flex-direction:column; align-items:center; gap:10px; padding:24px 10px;}
+  #attView .docopen .big{font-size:46px;}
+
   .section{padding:12px; border-top:1px solid var(--line);}
   .section h3{margin:0 0 8px; font-size:13px; text-transform:uppercase; letter-spacing:.06em; color:var(--dim);}
   textarea{width:100%; min-height:70px; background:var(--panel); color:var(--text);
@@ -339,6 +357,15 @@
         <span><span class="dot" style="background:var(--flag)"></span>Needs attention</span>
       </div>
       <div class="hint">Track: tap a zone to cycle its status. Edit: tap a zone to rename, change type, add notes, or delete.</div>
+      <div class="section" id="attachSection">
+        <h3>Photos &amp; files</h3>
+        <div class="attadd">
+          <button class="hbtn primary" id="attTakePhoto">📷 Take photo</button>
+          <button class="hbtn" id="attChoosePhoto">Photo library</button>
+          <button class="hbtn" id="attAddFile">Add file</button>
+        </div>
+        <div id="attGrid" class="attgrid"></div>
+      </div>
       <div class="section">
         <h3>Reference info</h3>
         <textarea id="siteNotes" placeholder="Gate codes, parking, quirks…"></textarea>
@@ -441,10 +468,26 @@
       <button class="hbtn primary" id="vSave">Save</button>
     </div>
   </div>
+
+  <div class="sheet" id="shAtt" style="display:none;">
+    <h2 id="attSheetTitle">Photo</h2>
+    <div id="attView"></div>
+    <p class="hint" id="attMeta" style="padding:8px 2px 0;"></p>
+    <label>Note</label>
+    <textarea id="attNote" placeholder="What is this? e.g. broken sprinkler head, NE corner"></textarea>
+    <div class="sheetbtns">
+      <button class="hbtn danger" id="attDelete">Delete</button>
+      <button class="hbtn" id="attCancel">Close</button>
+      <button class="hbtn primary" id="attSave">Save note</button>
+    </div>
+  </div>
 </div>
 
 <div id="toast"></div>
 <input type="file" id="filePhoto" accept="image/*">
+<input type="file" id="fileAttCam" accept="image/*" capture="environment">
+<input type="file" id="fileAttPhoto" accept="image/*">
+<input type="file" id="fileAttDoc">
 
 <script>
 "use strict";
@@ -1112,12 +1155,14 @@ async function openSite(id){
   if(!doc) doc = {id, name:meta.name, notes:"", photo:null, zones:[], log:[]};
   cur = doc;
   cur.log = Array.isArray(cur.log) ? cur.log : [];
+  cur.attachments = Array.isArray(cur.attachments) ? cur.attachments : [];
   setMode("track"); zoom = 1; applyZoom();
   $("siteTitle").textContent = cur.name;
   $("slopeChip").style.display = meta.slope ? "inline-block" : "none";
   renderVisit();
   $("siteNotes").value = cur.notes||"";
   renderLog();
+  renderAttachments();
   $("scrList").classList.remove("active");
   $("scrSite").classList.add("active");
   const img = $("sitePhoto");
@@ -1446,6 +1491,151 @@ $("filePhoto").addEventListener("change", async ev=>{
     toast("Photo saved");
   }catch(e){ toast("Couldn't read that image"); }
 });
+
+/* ---------------- attachments: photos & files per site ----------------
+   Each blob is stored in its own KV key `att:<id>` so the site doc stays
+   small (only metadata + a tiny thumbnail live in cur.attachments).
+   meta = {id, ts, kind:'photo'|'doc', name, note, thumb} (thumb photos only). */
+function attKey(id){ return "att:"+id; }
+
+function readFileDataURL(file){
+  return new Promise((res,rej)=>{
+    const r = new FileReader();
+    r.onload = ()=>res(r.result);
+    r.onerror = ()=>rej(r.error);
+    r.readAsDataURL(file);
+  });
+}
+function makeThumb(file, MAX){
+  return new Promise((res,rej)=>{
+    const img = new Image();
+    img.onload = ()=>{
+      const scale = Math.min(1, MAX/Math.max(img.width,img.height));
+      const c = document.createElement("canvas");
+      c.width = Math.round(img.width*scale); c.height = Math.round(img.height*scale);
+      c.getContext("2d").drawImage(img,0,0,c.width,c.height);
+      res(c.toDataURL("image/jpeg",0.7));
+      URL.revokeObjectURL(img.src);
+    };
+    img.onerror = rej;
+    img.src = URL.createObjectURL(file);
+  });
+}
+function fmtWhen(ts){
+  const d = new Date(ts);
+  return d.toLocaleDateString([], {month:"short", day:"numeric"}) + " " +
+         d.toLocaleTimeString([], {hour:"numeric", minute:"2-digit"});
+}
+function fileExt(name){
+  const m = /\.([a-z0-9]+)$/i.exec(name||""); return m ? m[1] : "file";
+}
+
+async function addPhotoAttachment(file){
+  toast("Processing photo…");
+  try{
+    const full  = await downscale(file);      // ~1600px JPEG, same as aerial
+    const thumb = await makeThumb(file, 220);  // tiny preview kept in the site doc
+    const id = uid(), ts = new Date().toISOString();
+    await saveDoc(attKey(id), {data:full, kind:"photo", name:file.name||"photo.jpg", ts});
+    cur.attachments.push({id, ts, kind:"photo", name:file.name||"photo.jpg", note:"", thumb});
+    persistSite();
+    renderAttachments();
+    toast("Photo added");
+  }catch(e){ toast("Couldn't read that image"); }
+}
+async function addDocAttachment(file){
+  toast("Adding file…");
+  try{
+    const data = await readFileDataURL(file);
+    const id = uid(), ts = new Date().toISOString();
+    await saveDoc(attKey(id), {data, kind:"doc", name:file.name||"file", ts});
+    cur.attachments.push({id, ts, kind:"doc", name:file.name||"file", note:""});
+    persistSite();
+    renderAttachments();
+    toast("File added");
+  }catch(e){ toast("Couldn't read that file"); }
+}
+
+function renderAttachments(){
+  const grid = $("attGrid");
+  if(!grid) return;
+  const list = (cur && Array.isArray(cur.attachments)) ? cur.attachments : [];
+  if(!list.length){ grid.innerHTML = '<div class="attempty">No photos or files yet.</div>'; return; }
+  /* newest first */
+  const items = list.slice().sort((a,b)=> (b.ts||"").localeCompare(a.ts||""));
+  grid.innerHTML = "";
+  items.forEach(a=>{
+    const tile = document.createElement("div");
+    tile.className = "atttile";
+    const noteHtml = a.note ? '<span class="note">'+esc(a.note)+'</span>' : '';
+    if(a.kind==="photo" && a.thumb){
+      tile.innerHTML = '<img class="thumb" src="'+a.thumb+'" alt="">'
+        + '<div class="cap">'+noteHtml+'<span class="when">'+fmtWhen(a.ts)+'</span></div>';
+    }else{
+      tile.innerHTML = '<div class="docthumb">📄<span class="ext">'+esc(fileExt(a.name))+'</span></div>'
+        + '<div class="cap">'+(a.note?noteHtml:'<span class="note">'+esc(a.name||"file")+'</span>')
+        + '<span class="when">'+fmtWhen(a.ts)+'</span></div>';
+    }
+    tile.onclick = ()=>openAttachment(a.id);
+    grid.appendChild(tile);
+  });
+}
+
+let attCur = null;
+async function openAttachment(id){
+  const meta = cur.attachments.find(a=>a.id===id);
+  if(!meta) return;
+  attCur = id;
+  $("attSheetTitle").textContent = meta.kind==="photo" ? "Photo" : (meta.name||"File");
+  $("attMeta").textContent = "Added " + fmtWhen(meta.ts);
+  $("attNote").value = meta.note||"";
+  const view = $("attView");
+  view.innerHTML = '<p class="hint" style="padding:2px;">Loading…</p>';
+  showSheet("shAtt");
+  let blob = await cacheGet(attKey(id));
+  if(!blob){ try{ blob = await apiGet(attKey(id)); if(blob) cachePut(attKey(id), blob); }catch(e){} }
+  if(!blob || !blob.data){ view.innerHTML = '<p class="hint" style="padding:2px;">File not available offline. Reopen when you have signal.</p>'; return; }
+  if(meta.kind==="photo"){
+    view.innerHTML = '<img alt="" src="'+blob.data+'">';
+  }else{
+    view.innerHTML = '<div class="docopen"><div class="big">📄</div><div>'+esc(meta.name||"file")+'</div>'
+      + '<button class="hbtn primary" id="attOpenBtn">Open file</button></div>';
+    $("attOpenBtn").onclick = ()=>{
+      const w = window.open();
+      if(w) w.document.write('<iframe src="'+blob.data+'" style="border:0;width:100%;height:100%;position:absolute;inset:0"></iframe>');
+      else toast("Allow pop-ups to open the file");
+    };
+  }
+}
+function saveAttNote(){
+  if(!attCur) return;
+  const meta = cur.attachments.find(a=>a.id===attCur);
+  if(meta){ meta.note = $("attNote").value.trim(); persistSite(); renderAttachments(); }
+  hideSheets();
+  toast("Saved");
+}
+function deleteAttachment(){
+  if(!attCur) return;
+  if(!confirm("Delete this attachment?")) return;
+  cur.attachments = cur.attachments.filter(a=>a.id!==attCur);
+  persistSite();
+  cachePut(attKey(attCur), null);  /* blob orphaned server-side (harmless); ref removed is the delete */
+  attCur = null;
+  renderAttachments();
+  hideSheets();
+  toast("Deleted");
+}
+
+/* wire attachment UI */
+$("attTakePhoto").onclick  = ()=>$("fileAttCam").click();
+$("attChoosePhoto").onclick = ()=>$("fileAttPhoto").click();
+$("attAddFile").onclick    = ()=>$("fileAttDoc").click();
+$("fileAttCam").addEventListener("change", ev=>{ const f=ev.target.files[0]; ev.target.value=""; if(f&&cur) addPhotoAttachment(f); });
+$("fileAttPhoto").addEventListener("change", ev=>{ const f=ev.target.files[0]; ev.target.value=""; if(f&&cur) addPhotoAttachment(f); });
+$("fileAttDoc").addEventListener("change", ev=>{ const f=ev.target.files[0]; ev.target.value=""; if(f&&cur) addDocAttachment(f); });
+$("attSave").onclick = saveAttNote;
+$("attDelete").onclick = deleteAttachment;
+$("attCancel").onclick = ()=>{ attCur=null; hideSheets(); };
 
 /* ---------------- history view ---------------- */
 let histEvents = null;
