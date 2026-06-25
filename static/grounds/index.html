@@ -1529,6 +1529,25 @@ function fmtWhen(ts){
 function fileExt(name){
   const m = /\.([a-z0-9]+)$/i.exec(name||""); return m ? m[1] : "file";
 }
+const IMG_RE = /\.(jpe?g|png|gif|webp|heic|heif|bmp)$/i;
+function isImageFile(file){
+  return (file && file.type && file.type.indexOf("image/")===0) || IMG_RE.test(file && file.name || "");
+}
+/* build a small thumbnail straight from a dataURL (used to heal image-docs) */
+function thumbFromDataURL(dataURL, MAX){
+  return new Promise((res,rej)=>{
+    const img = new Image();
+    img.onload = ()=>{
+      const scale = Math.min(1, MAX/Math.max(img.width,img.height));
+      const c = document.createElement("canvas");
+      c.width = Math.round(img.width*scale); c.height = Math.round(img.height*scale);
+      c.getContext("2d").drawImage(img,0,0,c.width,c.height);
+      res(c.toDataURL("image/jpeg",0.7));
+    };
+    img.onerror = rej;
+    img.src = dataURL;
+  });
+}
 
 async function addPhotoAttachment(file){
   toast("Processing photo…");
@@ -1544,6 +1563,8 @@ async function addPhotoAttachment(file){
   }catch(e){ toast("Couldn't read that image"); }
 }
 async function addDocAttachment(file){
+  /* an image picked via "Add file" is still a photo — give it a real preview */
+  if(isImageFile(file)) return addPhotoAttachment(file);
   toast("Adding file…");
   try{
     const data = await readFileDataURL(file);
@@ -1579,6 +1600,30 @@ function renderAttachments(){
     tile.onclick = ()=>openAttachment(a.id);
     grid.appendChild(tile);
   });
+  healImageDocs();
+}
+
+/* one-time repair: image files added as "docs" (no preview) get upgraded to
+   photo tiles — fetch the stored blob, build a thumbnail, flip kind. */
+let healing = false;
+async function healImageDocs(){
+  if(healing || !cur || !Array.isArray(cur.attachments)) return;
+  const sid = cur.id;
+  const targets = cur.attachments.filter(a=> a.kind!=="photo" && IMG_RE.test(a.name||"") && !a.thumb);
+  if(!targets.length) return;
+  healing = true;
+  let changed = false;
+  for(const a of targets){
+    try{
+      let blob = await cacheGet(attKey(a.id));
+      if(!blob){ try{ blob = await apiGet(attKey(a.id)); if(blob) cachePut(attKey(a.id), blob); }catch(e){} }
+      if(!blob || !blob.data) continue;
+      a.thumb = await thumbFromDataURL(blob.data, 220);
+      a.kind = "photo"; changed = true;
+    }catch(e){ /* undecodable (e.g. HEIC on desktop) — leave it as a file */ }
+  }
+  healing = false;
+  if(changed && cur && cur.id===sid){ persistSite(); renderAttachments(); }
 }
 
 let attCur = null;
