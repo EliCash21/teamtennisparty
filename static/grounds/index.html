@@ -90,6 +90,7 @@
   .badge.alldone{background:rgba(63,174,90,.18); color:var(--done);}
   .badge.photo{background:rgba(77,159,236,.15); color:var(--accent);}
   .badge.slope{background:rgba(224,82,82,.18); color:#ff9d9d;}
+  .badge.opent{background:rgba(232,163,61,.18); color:var(--flag);}
   .badge.time{display:inline-flex; flex-direction:column; align-items:flex-end; gap:1px;
     line-height:1.12; padding:4px 9px; background:rgba(77,159,236,.14); color:var(--accent);}
   .badge.time .tt{font-size:12.5px; font-weight:800; letter-spacing:.01em;}
@@ -201,6 +202,17 @@
   .lico.open{color:var(--flag);}
   .lico.done{color:var(--done);}
 
+  /* cross-site open tasks */
+  #btnOpenTasks{position:relative;}
+  #btnOpenTasks .cnt{position:absolute; top:3px; right:3px; min-width:17px; height:17px; padding:0 4px;
+    border-radius:99px; background:var(--flag); color:#fff; font-size:10.5px; font-weight:800;
+    display:flex; align-items:center; justify-content:center;}
+  .openitem.all{align-items:center;}
+  .openitem .obody{flex:1; min-width:0;}
+  .ockb{flex:0 0 auto; width:38px; height:38px; display:flex; align-items:center; justify-content:center;
+    background:none; border:none; color:var(--flag); padding:0;}
+  .ockb .icon{width:22px; height:22px;}
+
   .statgrid{display:grid; grid-template-columns:repeat(3,1fr); gap:10px; padding:12px;}
   .statcard{background:var(--panel); border:1px solid var(--line); border-radius:13px; box-shadow:var(--shadow);
     padding:14px 8px; text-align:center;}
@@ -295,12 +307,40 @@
       <h1>Sites</h1>
       <span id="syncPill" class="ok">synced</span>
       <button class="hbtn icononly" id="btnTheme" title="Toggle sun/dark mode"></button>
+      <button class="hbtn icononly" id="btnOpenTasks" title="Open tasks"></button>
       <button class="hbtn icononly" id="btnHistory" title="History"></button>
       <button class="hbtn icononly" id="btnMenu" title="Menu"></button>
     </header>
     <div id="progressBand"></div>
     <div class="searchwrap"><input id="search" type="search" placeholder="Search sites…" autocomplete="off"></div>
     <main><div id="siteList"></div></main>
+  </div>
+
+  <!-- ============ OPEN TASKS (all sites + general) ============ -->
+  <div class="screen" id="scrOpen">
+    <header>
+      <button class="hbtn" id="btnOpenBack" style="padding-left:11px;"><svg class="icon" viewBox="0 0 24 24"><polyline points="15 18 9 12 15 6"/></svg>Sites</button>
+      <h1>Open tasks</h1>
+      <button class="hbtn" id="btnOpenRefresh">Refresh</button>
+    </header>
+    <main>
+      <div class="section" style="border-top:none;">
+        <h3>Quick add (not tied to a site)</h3>
+        <div class="logadd">
+          <input type="text" id="dayInput" placeholder="Add a general note or task…" maxlength="300">
+          <button class="hbtn" id="dayTypeBtn" data-type="note">Note</button>
+          <button class="hbtn primary icononly" id="dayAddBtn" title="Add">+</button>
+        </div>
+      </div>
+      <div class="section">
+        <h3>Open everywhere</h3>
+        <div id="openAllList"><p class="hint" style="padding:0;">Loading…</p></div>
+      </div>
+      <div class="section">
+        <h3>General notes</h3>
+        <div id="dayFeed"></div>
+      </div>
+    </main>
   </div>
 
   <!-- ============ SITE DETAIL ============ -->
@@ -557,6 +597,7 @@ const ICONS = {
 function initIcons(){
   $("btnMenu").innerHTML = ICONS.menu;
   $("btnHistory").innerHTML = ICONS.history;
+  $("btnOpenTasks").innerHTML = ICONS.checksquare;
 }
 function applyTheme(t){
   document.documentElement.setAttribute("data-theme", t);
@@ -999,7 +1040,8 @@ function refreshCounts(siteDoc){
   if(!meta) return;
   meta.counts = { total: siteDoc.zones.length,
     done: siteDoc.zones.filter(z=>z.status==="done").length,
-    flag: siteDoc.zones.filter(z=>z.status==="flag").length };
+    flag: siteDoc.zones.filter(z=>z.status==="flag").length,
+    open: Array.isArray(siteDoc.log) ? siteDoc.log.filter(e=>e.type==="task"&&e.status==="open").length : 0 };
   meta.hasPhoto = !!siteDoc.photo;
   meta.name = siteDoc.name;
 }
@@ -1036,18 +1078,30 @@ async function enterApp(){
   flushDirty();
   loadEvtQueue();
   loadSiteTime();
+  loadDayNotes().then(renderOpenBtn);
   warmCache();
 }
 
 /* pre-download site docs (route sites first) so the field works offline */
 async function warmCache(){
   const ordered = [...INDEX.sites].sort((a,b)=>(a.route?0:1)-(b.route?0:1));
+  let countsChanged = false;
   for(const meta of ordered){
     const key = "site:"+meta.id;
     try{
       const fresh = await apiGet(key);
-      if(fresh) await cachePut(key, fresh);
+      if(fresh){
+        await cachePut(key, fresh);
+        /* heal the index's open-task count (covers docs edited before this feature) */
+        const open = Array.isArray(fresh.log) ? fresh.log.filter(e=>e.type==="task"&&e.status==="open").length : 0;
+        if(!meta.counts) meta.counts = {total:0,done:0,flag:0};
+        if((meta.counts.open||0) !== open){ meta.counts.open = open; countsChanged = true; }
+      }
     }catch(e){ break; } /* offline — stop, try again next launch */
+  }
+  if(countsChanged){
+    saveIndexDebounced();
+    if($("scrList").classList.contains("active")) renderList();
   }
 }
 
@@ -1073,10 +1127,12 @@ function siteRow(s){
       timeBadge = `<span class="badge time wkonly"><span class="tt">wk ${fmtMins(st.week)}</span></span>`;
     }
   }
+  const openN = (s.counts && s.counts.open) || 0;
   const b = document.createElement("button");
   b.className = "siterow";
   b.innerHTML = `<span class="nm">${esc(s.name)}</span>`
     + timeBadge
+    + (openN?`<span class="badge opent">☐ ${openN}</span>`:"")
     + (s.slope?'<span class="badge slope">⚠</span>':"")
     + (s.hasPhoto?'<span class="badge photo">📷</span>':"")
     + badge
@@ -1104,6 +1160,7 @@ function renderProgressBand(){
 }
 function renderList(){
   renderProgressBand();
+  renderOpenBtn();
   const q = $("search").value.trim().toLowerCase();
   const wrap = $("siteList"); wrap.innerHTML = "";
 
@@ -1681,6 +1738,165 @@ $("fileAttDoc").addEventListener("change", ev=>{ const f=ev.target.files[0]; ev.
 $("attSave").onclick = saveAttNote;
 $("attDelete").onclick = deleteAttachment;
 $("attCancel").onclick = ()=>{ attCur=null; hideSheets(); };
+
+/* ---------------- cross-site open tasks + general (day) notes ----------------
+   General notes live in their own KV doc `_daynotes` = {log:[...]} using the same
+   entry schema as site logs. The Open screen shows every open task across all
+   site docs (cache-first — warmCache keeps them fresh) plus general tasks. */
+let DAY = null;              // _daynotes doc
+let dayType = "note";
+let openAllRows = [];        // [{siteId?, siteName, doc?, entry, general?}]
+
+function dayOpenCount(){
+  return (DAY && Array.isArray(DAY.log)) ? DAY.log.filter(e=>e.type==="task"&&e.status==="open").length : 0;
+}
+function openTaskTotal(){
+  let n = dayOpenCount();
+  if(INDEX) INDEX.sites.forEach(s=>{ n += (s.counts && s.counts.open) || 0; });
+  return n;
+}
+function renderOpenBtn(){
+  const n = openTaskTotal();
+  $("btnOpenTasks").innerHTML = ICONS.checksquare + (n?`<span class="cnt">${n}</span>`:"");
+}
+async function loadDayNotes(){
+  const cached = await cacheGet("_daynotes");
+  if(cached && Array.isArray(cached.log)) DAY = cached;
+  try{
+    const d = await apiGet("_daynotes");
+    if(d && Array.isArray(d.log)){ DAY = d; await cachePut("_daynotes", d); }
+  }catch(e){ /* offline — keep cached */ }
+  if(!DAY) DAY = {log:[]};
+}
+function saveDayNotes(){ saveDoc("_daynotes", DAY); }
+
+function openOpenScreen(){
+  $("scrList").classList.remove("active");
+  $("scrOpen").classList.add("active");
+  renderDayFeed();
+  loadOpenAll();
+}
+function closeOpenScreen(){
+  $("scrOpen").classList.remove("active");
+  $("scrList").classList.add("active");
+  renderList();
+}
+async function loadOpenAll(){
+  const wrap = $("openAllList");
+  wrap.innerHTML = '<p class="hint" style="padding:0;">Loading…</p>';
+  const rows = [];
+  (DAY && Array.isArray(DAY.log) ? DAY.log : []).forEach(e=>{
+    if(e.type==="task" && e.status==="open") rows.push({general:true, siteName:"General", entry:e});
+  });
+  for(const meta of INDEX.sites){
+    const key = "site:"+meta.id;
+    let doc = await cacheGet(key);
+    if(!doc && meta.counts && meta.counts.open){
+      try{ doc = await apiGet(key); if(doc) cachePut(key, doc); }catch(e){}
+    }
+    if(!doc || !Array.isArray(doc.log)) continue;
+    doc.log.forEach(e=>{
+      if(e.type==="task" && e.status==="open")
+        rows.push({siteId:meta.id, siteName:meta.name, doc, entry:e});
+    });
+    /* heal a stale index count while we're here */
+    const open = doc.log.filter(e=>e.type==="task"&&e.status==="open").length;
+    if(!meta.counts) meta.counts = {total:0,done:0,flag:0};
+    if((meta.counts.open||0) !== open){ meta.counts.open = open; saveIndexDebounced(); }
+  }
+  rows.sort((a,b)=> (a.entry.ts||"") < (b.entry.ts||"") ? -1 : 1);   // oldest first
+  openAllRows = rows;
+  renderOpenAll();
+}
+function renderOpenAll(){
+  const wrap = $("openAllList"); wrap.innerHTML = "";
+  renderOpenBtn();
+  if(!openAllRows.length){
+    wrap.innerHTML = '<p class="hint" style="padding:0;">Nothing open anywhere.</p>';
+    return;
+  }
+  openAllRows.forEach((r,i)=>{
+    const d = document.createElement("div");
+    d.className = "openitem all";
+    d.innerHTML = `<button class="ockb" title="Mark done">${ICONS.square}</button>
+      <div class="obody"><div class="ltxt">${esc(r.entry.text)}</div>
+      <div class="lts">${esc(r.siteName)} · logged ${relTime(r.entry.ts)}</div></div>`;
+    d.querySelector(".ockb").onclick = ev=>{ ev.stopPropagation(); completeOpenRow(i); };
+    if(!r.general) d.onclick = ()=>{ closeOpenScreen(); openSite(r.siteId); };
+    wrap.appendChild(d);
+  });
+}
+async function completeOpenRow(i){
+  const r = openAllRows[i];
+  if(!r) return;
+  r.entry.status = "done"; r.entry.doneTs = new Date().toISOString();
+  if(r.general){
+    saveDayNotes(); renderDayFeed();
+  }else{
+    await saveDoc("site:"+r.siteId, r.doc);   // r.entry is a ref into r.doc.log
+    const meta = INDEX.sites.find(s=>s.id===r.siteId);
+    if(meta){
+      if(!meta.counts) meta.counts = {total:0,done:0,flag:0};
+      meta.counts.open = Math.max(0, (meta.counts.open||1)-1);
+      saveIndexDebounced();
+    }
+  }
+  openAllRows.splice(i,1);
+  toast("Done");
+  renderOpenAll();
+}
+function submitDayInput(){
+  const v = $("dayInput").value;
+  if(!v.trim() || !DAY) return;
+  const entry = { id: uid(), ts: new Date().toISOString(), type: dayType,
+    text: v.trim(), status: dayType==="task" ? "open" : null, doneTs: null };
+  DAY.log.push(entry);
+  $("dayInput").value = "";
+  saveDayNotes();
+  if(dayType==="task"){ openAllRows.push({general:true, siteName:"General", entry}); renderOpenAll(); }
+  renderDayFeed();
+  renderOpenBtn();
+}
+function toggleDayEntry(e){
+  if(e.status==="open"){ e.status="done"; e.doneTs=new Date().toISOString(); }
+  else{ e.status="open"; e.doneTs=null; }
+  saveDayNotes();
+  openAllRows = openAllRows.filter(r=>!(r.general && r.entry.id===e.id));
+  if(e.status==="open") openAllRows.push({general:true, siteName:"General", entry:e});
+  renderDayFeed();
+  renderOpenAll();
+}
+function renderDayFeed(){
+  const wrap = $("dayFeed"); wrap.innerHTML = "";
+  const entries = (DAY && Array.isArray(DAY.log) ? DAY.log : []).slice().sort((a,b)=> a.ts < b.ts ? 1 : -1);
+  if(!entries.length){
+    wrap.innerHTML = '<p class="hint" style="padding:0;">No general notes yet — quick-add above for anything not tied to a site.</p>';
+    return;
+  }
+  entries.forEach(e=>{
+    const isTask = e.type==="task", closed = isTask && e.status==="done";
+    const d = document.createElement("div");
+    d.className = "logitem" + (isTask ? " tappable" : "");
+    const icon = !isTask ? ICONS.note : (closed ? ICONS.checksquare : ICONS.square);
+    const icoCls = !isTask ? "note" : (closed ? "done" : "open");
+    const tsLine = fmtLogTs(e.ts) + (closed ? ` · done ${relTime(e.doneTs)}` : "");
+    d.innerHTML = `<span class="lico ${icoCls}">${icon}</span>
+      <div><div class="ltxt ${closed?"closed":""}">${esc(e.text)}</div><div class="lts">${tsLine}</div></div>`;
+    if(isTask) d.onclick = ()=>toggleDayEntry(e);
+    wrap.appendChild(d);
+  });
+}
+/* wiring */
+$("btnOpenTasks").onclick = openOpenScreen;
+$("btnOpenBack").onclick = closeOpenScreen;
+$("btnOpenRefresh").onclick = loadOpenAll;
+$("dayTypeBtn").onclick = ()=>{
+  dayType = dayType==="note" ? "task" : "note";
+  $("dayTypeBtn").textContent = dayType==="note" ? "Note" : "Task";
+  $("dayTypeBtn").dataset.type = dayType;
+};
+$("dayAddBtn").onclick = submitDayInput;
+$("dayInput").addEventListener("keydown", e=>{ if(e.key==="Enter") submitDayInput(); });
 
 /* ---------------- history view ---------------- */
 let histEvents = null;
