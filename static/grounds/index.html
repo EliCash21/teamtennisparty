@@ -759,21 +759,24 @@ setInterval(()=>{
   if($("scrList").classList.contains("active")){ computeSiteTime(stEvents||[]); renderList(); }
 }, 60000);
 let evtFlushing = false;
+function getDeviceId(){
+  let id = localStorage.getItem("gt.deviceId");
+  if(!id){ id = Math.random().toString(36).slice(2,8); localStorage.setItem("gt.deviceId", id); }
+  return id;
+}
 async function flushEvents(){
   if(evtFlushing || !evtQueue.length) return;
   evtFlushing = true;
   try{
     const batch = evtQueue.slice();
-    const key = "_events:" + new Date().toISOString().slice(0,7);
-    /* IMPORTANT: read the existing month doc and only treat it as empty when the
-       server actually returns null (key missing). A thrown GET means weak signal —
-       we must NOT write, or we'd overwrite the stored events with just this batch
-       (the silent data-loss bug seen 2026-06-15). The throw lands in catch below,
-       the queue is kept, and we retry later. */
-    const existing = await apiGet(key);                         // throws on network failure
-    const doc = (existing && Array.isArray(existing.events)) ? existing : {events:[]};
-    doc.events.push(...batch);
-    await apiPut(key, doc);
+    /* 2026-09-22 fix: each flush writes ONE NEW, uniquely-named key — never rewrites
+       a doc another device might also be writing. No GET-before-PUT, so two devices
+       flushing at the same moment can no longer clobber each other (the residual gap
+       left after the 2026-06-21 fix, which only protected against weak signal on a
+       single device). Reading merges every batch key for the month back together —
+       see fetchAllEvents(). */
+    const key = eventsMonthPrefix(0) + getDeviceId() + ":" + Date.now();
+    await apiPut(key, {events: batch});                         // throws on network failure
     evtQueue = evtQueue.slice(batch.length);
     await cachePut("_evtq", evtQueue);
   }catch(e){ /* offline/weak signal — queue persists, retried on online/sync/next event */ }
@@ -827,16 +830,36 @@ function eventsMonthKey(i){
   const d = new Date(Date.UTC(b.getUTCFullYear(), b.getUTCMonth()-i, 1));
   return "_events:" + d.toISOString().slice(0,7);
 }
+/* prefix for this month's per-flush batch keys (2026-09-22 concurrency fix, see flushEvents) */
+function eventsMonthPrefix(i){ return eventsMonthKey(i) + ":"; }
+/* Every event for the last `n` months: the old single monolithic doc per month (if any
+   events were written there before 2026-09-22, or by editMonthDoc since) PLUS every
+   per-flush batch key for that month. One /sites listing, then only the docs that
+   actually exist. */
+async function fetchAllEvents(n){
+  const events = [];
+  let keys = [];
+  try{ keys = await apiListKeys(); }catch(e){ /* listing failed — still try legacy docs below */ }
+  for(let i=0;i<n;i++){
+    try{ const doc = await apiGet(eventsMonthKey(i)); if(doc && Array.isArray(doc.events)) events.push(...doc.events); }
+    catch(e){ /* skip a missing/unreadable legacy month doc */ }
+    const want = encodeURIComponent(eventsMonthPrefix(i));       // apiListKeys() returns raw (already-encoded) KV keys
+    for(const raw of keys){
+      if(!raw.startsWith(want)) continue;
+      try{ const doc = await apiGet(decodeURIComponent(raw));    // apiGet re-encodes, so decode first
+        if(doc && Array.isArray(doc.events)) events.push(...doc.events); }
+      catch(e){ /* skip an unreadable batch, don't block the rest */ }
+    }
+  }
+  return events;
+}
 async function loadSiteTime(){
   /* cache-first for instant + offline badges */
   const cached = await cacheGet("_sttime_events");
   if(cached){ stEvents = cached; computeSiteTime(stEvents);
     if($("scrList").classList.contains("active")) renderList(); }
   try{
-    const evs = [];
-    for(const k of [eventsMonthKey(1), eventsMonthKey(0)]){  // prev + current (week can span a boundary)
-      try{ const d = await apiGet(k); if(d && Array.isArray(d.events)) evs.push(...d.events); }catch(e){}
-    }
+    const evs = await fetchAllEvents(2);   // prev + current month (week can span a boundary)
     stEvents = evs; await cachePut("_sttime_events", evs);
     computeSiteTime(evs);
     if($("scrList").classList.contains("active")) renderList();
@@ -1918,11 +1941,7 @@ async function loadHistory(force){
        the stored KV key is "_events%3A2026-06" with the colon URL-encoded, so the
        filter matched nothing and History showed zero. This builds the keys the same
        way flushEvents writes them, so they always line up.) */
-    const events = [];
-    for(let i=0;i<15;i++){                       // ~15 months back, for month/year rollups
-      try{ const doc = await apiGet(eventsMonthKey(i)); if(doc && Array.isArray(doc.events)) events.push(...doc.events); }
-      catch(e){ /* skip a missing/unreadable month */ }
-    }
+    const events = await fetchAllEvents(15);      // ~15 months back, for month/year rollups
     events.sort((a,b)=> (a.t||"") < (b.t||"") ? -1 : 1);
     histEvents = events;
     status.style.display = "none";
