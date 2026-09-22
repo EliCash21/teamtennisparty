@@ -570,11 +570,70 @@ function setPill(state, label){
 }
 
 /* ---------------- directions (opens Apple Maps) ----------------
-   Sites are Abbotsford School District schools; appending the city/
-   province/country strongly disambiguates the name for geocoding.
+   Sites are Abbotsford School District schools. Where we have a real,
+   verified street address (from the vault's Sites/ notes + the district's
+   own site for SBO — added 2026-09-22, see KNOWN_ADDRESSES), use it: the
+   name-only query below can geocode to the wrong place or fail outright
+   for schools with newer/renamed or ambiguous names. Falls back to
+   name + city for anything not in the table (a handful of internal-only
+   facilities — Dunach, ITC, Maple Grove – Indigenous Centre — don't have
+   a confirmed address yet).
    On iPad/iPhone the maps.apple.com link hands off to the Maps app. */
+const KNOWN_ADDRESSES = {
+  "ASIA – North Poplar Campus": "32041 Marshall Rd, Abbotsford, BC V2T 1A9",
+  "ASIA – Sumas Mountain Campus": "36232 Mountain Rd, Abbotsford, BC V3G 1M2",
+  "Abbotsford Arts Centre": "2329 Crescent Way, Abbotsford, BC V2S 3M1",
+  "Abbotsford Career Programs": "2606 Alliance St, Abbotsford, BC V2S 3J8",
+  "Abbotsford Middle School": "33231 Bevan Ave, Abbotsford, BC V2S 0A9",
+  "Abbotsford Senior Secondary": "33355 Bevan Ave, Abbotsford, BC V2S 1V5",
+  "Abbotsford Traditional School": "2272 Windsor St, Abbotsford, BC V2T 6M1",
+  "Abbotsford Virtual School": "33952 Pine St, Abbotsford, BC V2S 3Y6",
+  "Abby Early Years Centre": "33355 Bevan Ave, Abbotsford, BC V2S 1V5",
+  "Aberdeen Elementary": "2975 Bradner Rd, Abbotsford, BC V4X 1K6",
+  "Alexander Elementary": "2250 Lobban Rd, Abbotsford, BC V2S 2W1",
+  "Auguston Traditional Elementary": "36367 Stephen Leacock Dr, Abbotsford, BC V3G 2Z6",
+  "Bakerview Centre for Learning": "32622 Marshall Rd, Abbotsford, BC V2T 4A2",
+  "Barrowtown Elementary": "5137 Tolmie Rd, Abbotsford, BC V3G 2V4",
+  "Blue Jay Elementary": "30995 Southern Dr, Abbotsford, BC V2T 6X5",
+  "Bradner Elementary": "5291 Bradner Rd, Abbotsford, BC V4X 2P1",
+  "Chief Dan George Middle": "32877 Old Riverside Rd, Abbotsford, BC V2S 7A8",
+  "Clayburn Middle": "35139 Laburnum Ave, Abbotsford, BC V2S 8N3",
+  "Colleen & Gordie Howe Middle": "3174 Clearbrook Rd, Abbotsford, BC V2T 4N6",
+  "Dave Kandal Elementary": "3351 Crestview Ave, Abbotsford, BC V2T 6T5",
+  "Dormick Park Elementary": "32161 Dormick Ave, Abbotsford, BC V2T 1J6",
+  "Dr. Roberta Bondar Elementary": "32717 Chilcotin Dr, Abbotsford, BC V2T 5S5",
+  "Dr. Thomas A. Swift Elementary": "34800 Mierau St, Abbotsford, BC V2S 5Y4",
+  "Eugene Reimer Middle": "3433 Firhill Dr, Abbotsford, BC V2T 6X6",
+  "Godson Elementary": "33130 Bevan Ave, Abbotsford, BC V2S 1T6",
+  "Harry Sayers Elementary": "31321 Blueridge Dr, Abbotsford, BC V2T 6W2",
+  "Irene Kelleher Totíltawtxw": "2540 Eagle Mountain Dr, Abbotsford, BC V3G 3A1",
+  "Jackson Elementary": "33165 King Rd, Abbotsford, BC V2S 8B4",
+  "John Maclure Community School": "2990 Oriole Crescent, Abbotsford, BC",
+  "King Traditional Elementary": "28776 King Rd, Abbotsford, BC V4X 2R4",
+  "Margaret Stenersen Elementary": "3060 Old Clayburn Rd, Abbotsford, BC V2S 4H3",
+  "McMillan Elementary": "34830 Oakhill Dr, Abbotsford, BC V2S 7R3",
+  "Mountain Elementary": "2299 Mountain Dr, Abbotsford, BC V3G 1E6",
+  "Mt. Lehman Elementary": "6381 Mount Lehman Rd, Abbotsford, BC V4X 2G5",
+  "Máthxwi Elementary": "33661 Elizabeth Ave, Abbotsford, BC V4X 1T5",
+  "Prince Charles Elementary": "35410 McKee Rd, Abbotsford, BC V3G 3B1",
+  "Rick Hansen Secondary": "31150 Blueridge Dr, Abbotsford, BC V2T 0C2",
+  "Robert Bateman Secondary": "35045 Exbury Ave, Abbotsford, BC V2S 7L1",
+  "Ross Elementary": "2451 Ross Rd, Abbotsford, BC V4X 1J3",
+  "Sandy Hill Elementary": "3836 Old Clayburn Rd, Abbotsford, BC V3G 1H9",
+  "Semáth Elementary": "36321 Vye Rd, Abbotsford, BC V3G 1Z5",
+  "South Poplar Elementary": "32746 Huntingdon Rd, Abbotsford, BC V2T 5Z1",
+  "Summer School": "Sentinel Dr, Abbotsford, BC V2S",
+  "Ten-Broeck Elementary": "2580 Stanley St, Abbotsford, BC V2T 2P9",
+  "Terry Fox Elementary": "3071 Babich St, Abbotsford, BC V2S 5H7",
+  "W.J. Mouat Secondary": "32355 Mouat Dr, Abbotsford, BC V2T 4J1",
+  "William A. Fraser Middle": "34695 Blatchford Way, Abbotsford, BC V2S 5L2",
+  "Yale Secondary": "34620 Old Yale Rd, Abbotsford, BC V2S 7S6",
+  "École Centennial Park Elementary": "2527 Gladwin Rd, Abbotsford, BC V2T 3N8",
+  "École Clearbrook Elementary": "3614 Clearbrook Rd, Abbotsford, BC V2T 6Y8",
+  "SBO": "2790 Tims Street, Abbotsford, BC V2T 4M7"
+};
 function directionsUrl(name){
-  const q = `${name}, Abbotsford, BC, Canada`;
+  const q = KNOWN_ADDRESSES[name] || `${name}, Abbotsford, BC, Canada`;
   return `https://maps.apple.com/?daddr=${encodeURIComponent(q)}&dirflg=d`;
 }
 function openDirections(name){
