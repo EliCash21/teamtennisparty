@@ -390,6 +390,10 @@
           Open Maps in satellite view, screenshot this site, then add it here.</p>
           <button class="hbtn primary" id="btnAddPhoto">Add aerial photo</button>
         </div>
+        <div class="nophoto" id="aerialPending" style="display:none;">
+          <p><strong>Aerial photo not on this device yet.</strong><br>
+          It downloads the next time the app has signal.</p>
+        </div>
       </div>
       <div class="legend">
         <span><span class="dot" style="background:var(--todo)"></span>To do</span>
@@ -536,7 +540,8 @@
    (Cloudflare Worker + KV). Offline cache in IndexedDB.
    KV layout:
      _index          → {sites:[{id,name,hasPhoto,counts}], weekStarted, history}
-     site:<id>       → {id,name,notes,photo,zones:[...],log:[...]}
+     site:<id>       → {id,name,notes,photoKey,zones:[...],log:[...],attachments:[...],_rev}
+     aerial:<id>:<u> → {data,siteId,ts}   (immutable; see "aerial photos")
    log entries: {id,ts,type:'note'|'task',text,status:'open'|'done'|null,doneTs}
    ============================================================ */
 
@@ -1326,7 +1331,7 @@ function refreshCounts(siteDoc){
     done: siteDoc.zones.filter(z=>z.status==="done").length,
     flag: siteDoc.zones.filter(z=>z.status==="flag").length,
     open: Array.isArray(siteDoc.log) ? siteDoc.log.filter(e=>e.type==="task"&&e.status==="open").length : 0 };
-  meta.hasPhoto = !!siteDoc.photo;
+  meta.hasPhoto = hasAerial(siteDoc);
   meta.name = siteDoc.name;
 }
 
@@ -1381,6 +1386,8 @@ async function warmCache(){
       /* reconcile, not a blind overwrite: an unsynced offline edit to this site
          must survive the warm-up (it used to be replaced by the server copy) */
       const fresh = await reconcile(key, await fetchDoc(key));
+      /* aerials are immutable: fetch each one once, for offline use, never again */
+      if(fresh && fresh.photoKey && !(await cacheGet(fresh.photoKey))) await getAerial(fresh.photoKey);
       if(fresh){
         /* heal the index's open-task count (covers docs edited before this feature) */
         const open = Array.isArray(fresh.log) ? fresh.log.filter(e=>e.type==="task"&&e.status==="open").length : 0;
@@ -1507,7 +1514,7 @@ async function openSite(id){
   }else{
     try{ doc = await reconcile(key, await fetchDoc(key)); }catch(e){}
   }
-  if(!doc) doc = {id, name:meta.name, notes:"", photo:null, zones:[], log:[]};
+  if(!doc) doc = {id, name:meta.name, notes:"", zones:[], log:[]};
   cur = doc;
   setMode("track"); zoom = 1; applyZoom();
   $("slopeChip").style.display = meta.slope ? "inline-block" : "none";
@@ -1517,7 +1524,6 @@ async function openSite(id){
   $("scrSite").classList.add("active");
 }
 /* draw everything on the site screen from `cur` (also used when a newer copy arrives) */
-let shownPhoto = null;
 function redrawSite(){
   if(!cur) return;
   cur.zones = Array.isArray(cur.zones) ? cur.zones : [];
@@ -1527,18 +1533,41 @@ function redrawSite(){
   if(document.activeElement !== $("siteNotes")) $("siteNotes").value = cur.notes||"";   // don't clobber typing
   renderLog();
   renderAttachments();
-  const img = $("sitePhoto");
-  if(cur.photo){
-    if(shownPhoto !== cur.photo){
-      shownPhoto = cur.photo;
-      img.onload = ()=>{ $("imgWrap").style.display="block"; $("noPhoto").style.display="none"; renderZones(); };
-      img.src = cur.photo;
-    }else renderZones();
-  }else{
-    shownPhoto = null;
-    $("imgWrap").style.display="none"; $("noPhoto").style.display="block";
-  }
+  showAerial();
   renderZoneList();
+}
+
+/* ---------------- aerial photos (2026-10-28, #6) ----------------
+   The aerial lives in its own KV key `aerial:<siteId>:<uid>` = {data, siteId, ts};
+   the site doc only holds `photoKey`. A new photo always gets a new key, so a key's
+   content never changes: each device downloads it once and keeps it. That keeps the
+   site doc a few KB, so every tap/note no longer re-uploads ~400 KB, and the startup
+   refresh no longer re-downloads every aerial. Docs not yet migrated still carry the
+   photo inline in `photo` — both forms work. */
+function hasAerial(doc){ return !!(doc && (doc.photoKey || doc.photo)); }
+async function getAerial(key){
+  let b = await cacheGet(key);
+  if(!b){ b = await apiGet(key); if(b) await cachePut(key, b); }    // throws offline
+  return b && safeDataUrl(b.data, true);
+}
+let shownPhoto = null;
+async function showAerial(){
+  const img = $("sitePhoto"), doc = cur;
+  const want = doc.photoKey || (doc.photo ? "inline:"+doc.id+":"+doc.photo.length : null);
+  const show = which=>{
+    $("imgWrap").style.display = which==="img" ? "block" : "none";
+    $("noPhoto").style.display = which==="none" ? "block" : "none";
+    $("aerialPending").style.display = which==="pending" ? "block" : "none";
+  };
+  if(!want){ shownPhoto = null; show("none"); return; }
+  if(shownPhoto === want){ renderZones(); return; }
+  let src = null;
+  try{ src = doc.photoKey ? await getAerial(doc.photoKey) : safeDataUrl(doc.photo, true); }catch(e){}
+  if(cur !== doc) return;                                  // switched site while loading
+  if(!src){ shownPhoto = null; show("pending"); return; }
+  shownPhoto = want;
+  img.onload = ()=>{ if(cur===doc){ show("img"); renderZones(); } };
+  img.src = src;
 }
 function persistSite(){
   if(!cur) return;
@@ -1714,7 +1743,7 @@ $("zonesSvg").addEventListener("click",ev=>{
 });
 
 function setMode(m){
-  if(m==="draw" && cur && !cur.photo){ toast("Add an aerial photo first"); m = "track"; }
+  if(m==="draw" && cur && !hasAerial(cur)){ toast("Add an aerial photo first"); m = "track"; }
   mode = m;
   document.querySelectorAll("#modeSeg button").forEach(b=>b.classList.toggle("on",b.dataset.mode===m));
   $("drawbar").classList.toggle("on", m==="draw");
@@ -1849,11 +1878,13 @@ $("filePhoto").addEventListener("change", async ev=>{
   if(!f || !cur) return;
   toast("Processing photo…");
   try{
-    cur.photo = await downscale(f);
+    const data = await downscale(f), doc = cur;
+    const key = "aerial:" + doc.id + ":" + uid();
+    await saveDoc(key, {data, siteId: doc.id, ts: new Date().toISOString()});   // blob first (queued if offline)
+    doc.photoKey = key;
+    delete doc.photo;                                  // a pre-migration inline copy, if any
     persistSite();
-    const img = $("sitePhoto");
-    img.src = cur.photo;
-    img.onload = ()=>{ $("imgWrap").style.display="block"; $("noPhoto").style.display="none"; renderZones(); };
+    if(cur === doc) showAerial();
     toast("Photo saved");
   }catch(e){ toast("Couldn't read that image"); }
 });
