@@ -734,10 +734,130 @@ async function apiGet(key){
   if(!r.ok) throw new Error("GET "+key+" "+r.status);
   return r.json();
 }
+/* returns the Worker's reply ({ok, rev?}); a 409 throws a ConflictError carrying the
+   newer server copy (see "versioned docs" below) */
+class ConflictError extends Error{ constructor(current){ super("conflict"); this.current = current; } }
 async function apiPut(key,doc){
   const r = await fetchT(`${API}/site/${encodeURIComponent(key)}`,{
     method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(doc)}, 20000);
+  if(r.status===409){ const j = await r.json().catch(()=>({})); throw new ConflictError(j.current||null); }
   if(!r.ok) throw new Error("POST "+key+" "+r.status);
+  return r.json().catch(()=>({}));
+}
+
+/* ---------------- versioned docs: never overwrite newer data (2026-10-28, #2) ----------------
+   Site docs, _index and _daynotes carry `_rev`, bumped by the Worker on every save.
+   A save based on an old `_rev` is refused (409) with the newer server copy; we then
+   three-way merge — base (the last server copy this device saw, kept as `_base:<key>`),
+   mine (this device's edit) and theirs (the server copy) — and save again.
+   Merge rules: lists of items with an `id` (zones, log, attachments, sites) merge item
+   by item and field by field; a field changed on only one side takes that side; changed
+   on both, this device wins (it's the newer action). Additions on either side are kept.
+   A deletion wins unless the other side edited that item since. `history` (weekly
+   resets) is a union. Everything else follows the one-side-changed rule. */
+function isVersioned(key){ return key==="_index" || key==="_daynotes" || key.startsWith("site:"); }
+function clone(x){ return x==null ? x : JSON.parse(JSON.stringify(x)); }
+function same(a,b){ return JSON.stringify(a)===JSON.stringify(b); }
+const isObj = x => x!==null && typeof x==="object" && !Array.isArray(x);
+const isIdList = x => Array.isArray(x) && x.every(i=>isObj(i) && i.id!=null);   // [] counts too
+function mergeValue(b,m,t){
+  if(same(m,t)) return clone(m);
+  if(same(m,b)) return clone(t);              // only theirs changed
+  if(same(t,b)) return clone(m);              // only mine changed
+  if(isObj(m) && isObj(t)) return mergeObj(isObj(b)?b:{}, m, t);
+  if(isIdList(m) && isIdList(t) && (m.length || t.length))
+    return mergeIdList(isIdList(b)?b:[], m, t);
+  return clone(m);                            // both changed a plain value: mine wins
+}
+function mergeObj(b,m,t){
+  const out = {};
+  new Set([...Object.keys(t), ...Object.keys(m)]).forEach(k=>{
+    if(k==="_rev") return;
+    if(!(k in m)){ if(k in b && same(t[k],b[k])) return; out[k]=clone(t[k]); return; }   // I removed it
+    if(!(k in t)){ if(k in b && same(m[k],b[k])) return; out[k]=clone(m[k]); return; }   // they removed it
+    out[k] = (k==="history" && Array.isArray(m[k]) && Array.isArray(t[k]))
+      ? unionList(b[k]||[], m[k], t[k]) : mergeValue(b[k], m[k], t[k]);
+  });
+  return out;
+}
+function mergeIdList(b,m,t){
+  const byId = l => new Map(l.map(i=>[String(i.id), i]));
+  const B = byId(b), M = byId(m), T = byId(t), out = [];
+  const ids = [...T.keys(), ...[...M.keys()].filter(id=>!T.has(id))];
+  ids.forEach(id=>{
+    const bi=B.get(id), mi=M.get(id), ti=T.get(id);
+    if(mi && ti) out.push(mergeObj(bi||{}, mi, ti));
+    else if(mi){ if(!bi || !same(mi,bi)) out.push(clone(mi)); }    // theirs deleted it: keep only if I added/edited it
+    else if(ti){ if(!bi || !same(ti,bi)) out.push(clone(ti)); }    // I deleted it: keep only if they added/edited it
+  });
+  return out;
+}
+function unionList(b,m,t){
+  const seen = new Set(t.map(x=>JSON.stringify(x)));
+  return clone(t).concat(clone(m.filter(x=>!seen.has(JSON.stringify(x)))));
+}
+function mergeDocs(base, mine, theirs){
+  if(!theirs) return clone(mine);
+  const out = mergeObj(base||{}, mine||{}, theirs);
+  out._rev = Number.isInteger(theirs._rev) ? theirs._rev : 0;
+  return out;
+}
+/* replace an object's contents but keep the same object (cur/INDEX/DAY stay valid) */
+function replaceInPlace(target, src){
+  if(target===src) return;
+  Object.keys(target).forEach(k=>delete target[k]);
+  Object.assign(target, clone(src));
+}
+async function isDirty(key){ return ((await cacheGet("_dirty"))||[]).includes(key); }
+/* GET a doc from the server. Always pass the result through reconcile(), which is
+   the only place (besides putDoc) that moves the merge base forward. */
+async function fetchDoc(key){ return apiGet(key); }
+/* a fresh server copy arrived: if this device has unsynced edits to that doc, merge
+   them on top instead of throwing them away; otherwise the server copy wins.
+   The merge base only moves to the new server copy AFTER merging — moving it first
+   makes the merge read the other device's additions as deletions by this one. */
+async function reconcile(key, server){
+  if(!server) return null;
+  const local = await cacheGet(key);
+  /* a reply that's older than what this device already has (two downloads crossed) */
+  if(local && Number.isInteger(local._rev) && Number.isInteger(server._rev) && local._rev > server._rev) return local;
+  let result = server;
+  if(local && isVersioned(key) && await isDirty(key))
+    result = mergeDocs(await cacheGet("_base:"+key), local, server);
+  await cachePut(key, result);
+  if(isVersioned(key)) await cachePut("_base:"+key, server);
+  return result;
+}
+/* push one versioned doc; on a version conflict merge and retry. `doc` is updated in place. */
+async function putDoc(key, doc){
+  if(isVersioned(key) && !Number.isInteger(doc._rev)) doc._rev = 0;
+  for(let attempt=0; attempt<4; attempt++){
+    try{
+      const res = await apiPut(key, doc);
+      if(isVersioned(key) && res && Number.isInteger(res.rev)){
+        doc._rev = res.rev;
+        await cachePut(key, doc);
+        await cachePut("_base:"+key, clone(doc));
+      }
+      return;
+    }catch(e){
+      if(!(e instanceof ConflictError)) throw e;
+      const merged = mergeDocs(await cacheGet("_base:"+key), doc, e.current);
+      replaceInPlace(doc, merged);
+      if(e.current) await cachePut("_base:"+key, e.current);
+      await cachePut(key, doc);
+      onDocMerged(key, doc);
+    }
+  }
+  throw new Error("still conflicting after retries: "+key);
+}
+/* a merge changed a doc that may also be live on screen: update the live copy + redraw */
+function onDocMerged(key, doc){
+  if(key==="_index" && INDEX) replaceInPlace(INDEX, doc);
+  else if(key==="_daynotes" && DAY) replaceInPlace(DAY, doc);
+  else if(cur && key==="site:"+cur.id) replaceInPlace(cur, doc);
+  if(cur && key==="site:"+cur.id && $("scrSite").classList.contains("active")) redrawSite();
+  if($("scrList").classList.contains("active")) renderList();
 }
 async function apiListKeys(){
   const r = await fetchT(`${API}/sites`, {}, 15000);
@@ -759,8 +879,8 @@ async function flushDirty(){
   for(const key of [...d]){
     try{
       const doc = await cacheGet(key);
-      if(doc!==null) await apiPut(key,doc);
-      d = d.filter(k=>k!==key);
+      if(doc!==null) await putDoc(key,doc);
+      d = ((await cacheGet("_dirty"))||[]).filter(k=>k!==key);
       await cachePut("_dirty", d);
     }catch(e){ setPill("off","offline — will retry"); return false; }
   }
@@ -772,7 +892,7 @@ async function saveDoc(key,doc){
   await cachePut(key,doc);
   try{
     setPill("busy","syncing…");
-    await apiPut(key,doc);
+    await putDoc(key,doc);
     await flushDirty();
     setPill("ok","synced");
   }catch(e){
@@ -1130,10 +1250,12 @@ async function loadIndex(){
   const cached = await cacheGet("_index");
   if(cached){ INDEX = cached; }
   try{
-    let idx = await apiGet("_index");
+    let idx = await fetchDoc("_index");
     if(!idx || !Array.isArray(idx.sites)){
       idx = cached || newIndex();
-      await apiPut("_index", idx);
+      await putDoc("_index", idx);
+    }else{
+      idx = await reconcile("_index", idx);        // keep unsynced index edits from this device
     }
     INDEX = idx;
     await cachePut("_index", idx);
@@ -1206,9 +1328,10 @@ async function warmCache(){
   for(const meta of ordered){
     const key = "site:"+meta.id;
     try{
-      const fresh = await apiGet(key);
+      /* reconcile, not a blind overwrite: an unsynced offline edit to this site
+         must survive the warm-up (it used to be replaced by the server copy) */
+      const fresh = await reconcile(key, await fetchDoc(key));
       if(fresh){
-        await cachePut(key, fresh);
         /* heal the index's open-task count (covers docs edited before this feature) */
         const open = Array.isArray(fresh.log) ? fresh.log.filter(e=>e.type==="task"&&e.status==="open").length : 0;
         if(!meta.counts) meta.counts = {total:0,done:0,flag:0};
@@ -1322,28 +1445,47 @@ async function openSite(id){
   /* cache-first: open instantly from the iPad, refresh from server in background */
   let doc = await cacheGet(key);
   if(doc){
-    apiGet(key).then(fresh=>{ if(fresh) cachePut(key,fresh); }).catch(()=>{});
+    /* background refresh: if the server has a newer copy, show it now — merged with
+       any unsynced edits from this device — so you never edit a stale copy (#2) */
+    fetchDoc(key).then(fresh=>reconcile(key, fresh)).then(latest=>{
+      if(!latest || !cur || cur.id!==id || same(latest, cur)) return;
+      /* mid-edit (a sheet open, or drawing)? leave the screen alone — this device's
+         next save gets a 409 and merges with the newer copy instead */
+      if($("overlay").classList.contains("on") || mode!=="track") return;
+      replaceInPlace(cur, latest); redrawSite();
+    }).catch(()=>{});
   }else{
-    try{ doc = await apiGet(key); if(doc) await cachePut(key,doc); }catch(e){}
+    try{ doc = await reconcile(key, await fetchDoc(key)); }catch(e){}
   }
   if(!doc) doc = {id, name:meta.name, notes:"", photo:null, zones:[], log:[]};
   cur = doc;
-  cur.log = Array.isArray(cur.log) ? cur.log : [];
-  cur.attachments = Array.isArray(cur.attachments) ? cur.attachments : [];
   setMode("track"); zoom = 1; applyZoom();
-  $("siteTitle").textContent = cur.name;
   $("slopeChip").style.display = meta.slope ? "inline-block" : "none";
   renderVisit();
-  $("siteNotes").value = cur.notes||"";
-  renderLog();
-  renderAttachments();
+  redrawSite();
   $("scrList").classList.remove("active");
   $("scrSite").classList.add("active");
+}
+/* draw everything on the site screen from `cur` (also used when a newer copy arrives) */
+let shownPhoto = null;
+function redrawSite(){
+  if(!cur) return;
+  cur.zones = Array.isArray(cur.zones) ? cur.zones : [];
+  cur.log = Array.isArray(cur.log) ? cur.log : [];
+  cur.attachments = Array.isArray(cur.attachments) ? cur.attachments : [];
+  $("siteTitle").textContent = cur.name;
+  if(document.activeElement !== $("siteNotes")) $("siteNotes").value = cur.notes||"";   // don't clobber typing
+  renderLog();
+  renderAttachments();
   const img = $("sitePhoto");
   if(cur.photo){
-    img.src = cur.photo;
-    img.onload = ()=>{ $("imgWrap").style.display="block"; $("noPhoto").style.display="none"; renderZones(); };
+    if(shownPhoto !== cur.photo){
+      shownPhoto = cur.photo;
+      img.onload = ()=>{ $("imgWrap").style.display="block"; $("noPhoto").style.display="none"; renderZones(); };
+      img.src = cur.photo;
+    }else renderZones();
   }else{
+    shownPhoto = null;
     $("imgWrap").style.display="none"; $("noPhoto").style.display="block";
   }
   renderZoneList();
@@ -1606,7 +1748,7 @@ $("mNewWeek").onclick = async ()=>{
     if(!meta.counts || !meta.counts.total) continue;
     const key = "site:"+meta.id;
     let doc = null;
-    try{ doc = await apiGet(key); }catch(e){ doc = await cacheGet(key); }
+    try{ doc = await reconcile(key, await fetchDoc(key)); }catch(e){ doc = await cacheGet(key); }
     if(!doc) continue;
     entry.sites.push({name:doc.name, done:doc.zones.filter(z=>z.status==="done").length,
       flagged:doc.zones.filter(z=>z.status==="flag").map(z=>z.name), total:doc.zones.length});
@@ -1883,8 +2025,8 @@ async function loadDayNotes(){
   const cached = await cacheGet("_daynotes");
   if(cached && Array.isArray(cached.log)) DAY = cached;
   try{
-    const d = await apiGet("_daynotes");
-    if(d && Array.isArray(d.log)){ DAY = d; await cachePut("_daynotes", d); }
+    const d = await reconcile("_daynotes", await fetchDoc("_daynotes"));
+    if(d && Array.isArray(d.log)) DAY = d;
   }catch(e){ /* offline — keep cached */ }
   if(!DAY) DAY = {log:[]};
 }
@@ -1912,7 +2054,7 @@ async function loadOpenAll(){
     const key = "site:"+meta.id;
     let doc = await cacheGet(key);
     if(!doc && meta.counts && meta.counts.open){
-      try{ doc = await apiGet(key); if(doc) cachePut(key, doc); }catch(e){}
+      try{ doc = await reconcile(key, await fetchDoc(key)); }catch(e){}
     }
     if(!doc || !Array.isArray(doc.log)) continue;
     doc.log.forEach(e=>{
