@@ -170,6 +170,8 @@
   #zonesSvg text{fill:#fff; font-weight:700; paint-order:stroke; stroke:rgba(0,0,0,.75); stroke-width:3px;
     text-anchor:middle; pointer-events:none;}
   #zonesSvg circle.vtx{fill:#fff; stroke:var(--accent); stroke-width:2;}
+  #zonesSvg polygon.parcel{fill:none; stroke:rgba(255,255,255,.9); stroke-width:1.5; pointer-events:none; cursor:auto;}
+  .zarea{font-size:12px; color:var(--dim); white-space:nowrap;}
 
   .nophoto{padding:40px 20px; text-align:center; color:var(--dim);}
   .nophoto p{margin:0 0 18px; font-size:15px; line-height:1.5;}
@@ -458,6 +460,7 @@
         <span><span class="dot" style="background:var(--todo)"></span>To do</span>
         <span><span class="dot" style="background:var(--done)"></span>Done this week</span>
         <span><span class="dot" style="background:var(--flag)"></span>Needs attention</span>
+        <span id="propArea" style="display:none;"></span>
       </div>
       <div class="hint">Track: tap a zone to cycle its status. Edit: tap a zone to rename, change type, add notes, or delete.</div>
       <div class="section" id="attachSection">
@@ -509,6 +512,7 @@
 <div id="overlay">
   <div class="sheet" id="shZone" style="display:none;">
     <h2 id="zoneSheetTitle">Zone</h2>
+    <div class="zarea" id="zArea" style="display:none;"></div>
     <label>Name</label>
     <input type="text" id="zName" placeholder="e.g. Front field, Boulevard strip">
     <label>Task type</label>
@@ -1842,6 +1846,7 @@ function redrawSite(){
   renderAttachments();
   showAerial();
   renderZoneList();
+  renderPropArea();
 }
 
 /* ---------------- aerial photos (2026-10-28, #6) ----------------
@@ -1900,6 +1905,34 @@ function centroid(pts){
   let x=0,y=0; pts.forEach(p=>{x+=p[0];y+=p[1];});
   return [x/pts.length, y/pts.length];
 }
+/* ---- map-accurate aerials (zone upgrade Phase 1, 2026-10-28) ----
+   A site switched to a city orthophoto by _scripts/city_aerials.py carries
+   geo = {source, year, crs:"EPSG:3857", extent:{xmin,ymin,xmax,ymax}, parcel:[ring…],
+          parcelAreaM2, parcelIds, photoKey}
+   with parcel rings as 0–1 fractions of the photo, like zone points. geo only counts
+   while the site still shows that photo (geo.photoKey === photoKey), so a hand-picked
+   aerial never gets a wrong scale. No geo → everything works exactly as before. */
+function siteGeo(doc){
+  const g = doc && doc.geo, e = g && g.extent;
+  return g && g.photoKey && g.photoKey===doc.photoKey && e && e.xmax>e.xmin && e.ymax>e.ymin ? g : null;
+}
+/* ground area in m² of 0–1 points: to Web Mercator metres via the extent, then × cos²(lat)
+   (Mercator stretches both directions by 1/cos(lat)) — matches ParcelMap BC within 0.1% */
+function geoArea(g, pts){
+  if(!g || !pts || pts.length<3) return null;
+  const e = g.extent, dx = e.xmax-e.xmin, dy = e.ymax-e.ymin;
+  const lat = 2*Math.atan(Math.exp((e.ymin+e.ymax)/2/6378137)) - Math.PI/2;
+  let s = 0;
+  pts.forEach((p,i)=>{ const q = pts[(i+1)%pts.length]; s += p[0]*dx*(-q[1]*dy) - q[0]*dx*(-p[1]*dy); });
+  return Math.abs(s)/2 * Math.cos(lat)**2;
+}
+function fmtArea(m2){ return m2==null ? "" : `${Math.round(m2).toLocaleString()} m²`; }
+function renderPropArea(){
+  const g = siteGeo(cur), el = $("propArea");
+  el.style.display = g ? "" : "none";
+  el.textContent = g && g.parcelAreaM2 ? `Property: ${fmtArea(g.parcelAreaM2)}` : "";
+}
+
 function renderZones(){
   const svg = $("zonesSvg");
   const {W,H} = svgDims();
@@ -1907,6 +1940,13 @@ function renderZones(){
   svg.innerHTML = "";
   if(!cur) return;
   const fontSize = Math.max(W,H)/45;
+  const geo = siteGeo(cur);
+  if(geo) (geo.parcel||[]).forEach(ring=>{                     // property line, under the zones, never takes taps
+    const pl = document.createElementNS("http://www.w3.org/2000/svg","polygon");
+    pl.setAttribute("points", ring.map(p=>`${p[0]*W},${p[1]*H}`).join(" "));
+    pl.setAttribute("class","parcel");
+    svg.appendChild(pl);
+  });
 
   cur.zones.forEach(z=>{
     const ptStr = z.points.map(p=>`${p[0]*W},${p[1]*H}`).join(" ");
@@ -1944,6 +1984,7 @@ function renderZoneList(){
     return;
   }
   const cMap = {todo:"var(--todo)",done:"var(--done)",flag:"var(--flag)"};
+  const geo = siteGeo(cur);
   cur.zones.forEach(z=>{
     const d = document.createElement("div");
     const days = zoneAgeDays(cur.id, z.id);
@@ -1951,6 +1992,7 @@ function renderZoneList(){
     d.className="zonerow";
     d.innerHTML = `<span class="st" style="background:${cMap[z.status]}"></span>
       <span class="znm">${esc(z.name)}${z.notes?` <span class="ztp">— ${esc(z.notes)}</span>`:""}</span>
+      ${geo ? `<span class="zarea">${fmtArea(geoArea(geo, z.points))}</span>` : ""}
       <span class="zage ${ageClass(days)}">${ageTxt}</span>
       <span class="ztp">${esc(z.type)}</span>`;
     d.onclick = ()=>openZoneSheet(z);
@@ -2090,9 +2132,14 @@ $("zonesSvg").addEventListener("click",ev=>{
   const x = (ev.clientX - r.left)/r.width, y = (ev.clientY - r.top)/r.height;
   if(x<0||x>1||y<0||y>1) return;
   drawPts.push([x,y]);
-  $("drawMsg").textContent = `${drawPts.length} point${drawPts.length===1?"":"s"} — need at least 3.`;
+  drawMsgCount();
   renderZones();
 });
+function drawMsgCount(){
+  const a = geoArea(siteGeo(cur), drawPts);
+  $("drawMsg").textContent = `${drawPts.length} point${drawPts.length===1?"":"s"} — ` +
+    (drawPts.length>=3 && a!=null ? fmtArea(a) : "need at least 3.");
+}
 
 function setMode(m){
   if(m==="draw" && cur && !hasAerial(cur)){ toast("Add an aerial photo first"); m = "track"; }
@@ -2104,7 +2151,7 @@ function setMode(m){
   renderZones();
 }
 document.querySelectorAll("#modeSeg button").forEach(b=>b.onclick=()=>setMode(b.dataset.mode));
-$("btnUndoPt").onclick = ()=>{ drawPts.pop(); renderZones(); };
+$("btnUndoPt").onclick = ()=>{ drawPts.pop(); if(drawPts.length) drawMsgCount(); renderZones(); };
 $("btnCancelDraw").onclick = ()=>setMode("track");
 $("btnFinishZone").onclick = ()=>{
   if(drawPts.length<3){ toast("Need at least 3 points"); return; }
@@ -2153,6 +2200,9 @@ function openZoneSheet(z){
   $("zName").value = z ? z.name : "";
   $("zType").value = z ? z.type : "Mowing";
   $("zNotes").value = z ? (z.notes||"") : "";
+  const area = geoArea(siteGeo(cur), z ? z.points : pendingNewZone);
+  $("zArea").style.display = area!=null ? "" : "none";
+  $("zArea").textContent = area!=null ? `Area: ${fmtArea(area)}` : "";
   sheetStatus = z ? z.status : "todo";
   paintStatusBtns();
   $("zDelete").style.display = z ? "block" : "none";
@@ -2322,8 +2372,9 @@ $("filePhoto").addEventListener("change", async ev=>{
     await saveDoc(key, {data, siteId: doc.id, ts: new Date().toISOString()});   // blob first (queued if offline)
     doc.photoKey = key;
     delete doc.photo;                                  // a pre-migration inline copy, if any
+    delete doc.geo;                                    // a hand-picked photo has no map scale
     persistSite();
-    if(cur === doc) showAerial();
+    if(cur === doc){ showAerial(); renderZoneList(); renderPropArea(); }
     toast("Photo saved");
   }catch(e){ toast("Couldn't read that image"); }
 });
