@@ -291,6 +291,17 @@
   #toast{position:fixed; bottom:24px; left:50%; transform:translateX(-50%); background:#000c;
     color:#fff; padding:10px 18px; border-radius:99px; font-size:14px; opacity:0; transition:opacity .25s; z-index:99; pointer-events:none; white-space:nowrap;}
   #toast.on{opacity:1;}
+  /* undo bar after a zone tap (#13): big target, above the safe area, clear of the toast */
+  #undoBar{position:fixed; left:12px; right:12px; bottom:max(16px, env(safe-area-inset-bottom)); z-index:98;
+    display:flex; align-items:center; gap:12px; padding:8px 8px 8px 16px; border-radius:14px;
+    background:#1b2433; color:#fff; border:1px solid var(--line); box-shadow:0 6px 24px rgba(0,0,0,.45);
+    font-size:15px; transform:translateY(140%); opacity:0; transition:transform .2s, opacity .2s; pointer-events:none;
+    max-width:520px; margin:0 auto;}
+  #undoBar.on{transform:none; opacity:1; pointer-events:auto;}
+  #undoMsg{flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+  #undoBtn{flex:0 0 auto; min-height:var(--tap); padding:0 22px; border-radius:10px; border:none;
+    background:var(--accent); color:#fff; font-size:15.5px; font-weight:800; font-family:inherit;}
+  #undoBtn:active{transform:scale(.97);}
   input[type=file]{display:none;}
   .hbtn{white-space:nowrap;}
 
@@ -559,6 +570,7 @@
 </div>
 
 <div id="toast"></div>
+<div id="undoBar" role="status"><span id="undoMsg"></span><button id="undoBtn" type="button">Undo</button></div>
 <input type="file" id="filePhoto" accept="image/*">
 <input type="file" id="fileAttCam" accept="image/*" capture="environment">
 <input type="file" id="fileAttPhoto" accept="image/*">
@@ -909,7 +921,7 @@ async function flushDirty(){
   for(const key of [...d]){
     try{
       const doc = await cacheGet(key);
-      if(doc!==null) await putDoc(key,doc);
+      if(doc!==null) await putLatest(key,doc);
       d = ((await cacheGet("_dirty"))||[]).filter(k=>k!==key);
       await cachePut("_dirty", d);
     }catch(e){ setPill("off","offline — will retry"); return false; }
@@ -918,11 +930,27 @@ async function flushDirty(){
   return true;
 }
 /* save doc: cache immediately, push to API, queue on failure */
+/* One save per key at a time (2026-10-28, found testing #13). Two quick saves of the
+   same doc (a tap, then Undo) used to go out together on the same _rev; the second got
+   a 409 and the merge read "back to the old value" as "no change", so the tap won.
+   Now a save that arrives while one is in flight just asks for one more round, which
+   sends the latest state on the fresh _rev. */
+const saving = {};
+function putLatest(key, doc){
+  const s = saving[key];
+  if(s){ s.again = true; s.doc = doc; return s.done; }
+  const st = saving[key] = {again:false, doc};
+  st.done = (async()=>{
+    try{ do{ st.again = false; await putDoc(key, st.doc); } while(st.again); }
+    finally{ delete saving[key]; }
+  })();
+  return st.done;
+}
 async function saveDoc(key,doc){
   await cachePut(key,doc);
   try{
     setPill("busy","syncing…");
-    await putDoc(key,doc);
+    await putLatest(key,doc);
     await flushDirty();
     setPill("ok","synced");
   }catch(e){
@@ -938,13 +966,15 @@ window.addEventListener("online", ()=>{ flushDirty(); flushEvents(); });
 let evtQueue = [];
 let evtTimer = null;
 async function loadEvtQueue(){ evtQueue = (await cacheGet("_evtq"))||[]; if(evtQueue.length) scheduleEvtFlush(); }
-function logEvent(type, z){
-  evtQueue.push({ t: new Date().toISOString(), type,
+function logEvent(type, z, extra){
+  const evt = { t: new Date().toISOString(), type,
     siteId: cur?cur.id:null, site: cur?cur.name:null,
     zoneId: z?z.id:null, zone: z?z.name:null, ztype: z?z.type:null,
-    status: z?z.status:null });
+    status: z?z.status:null, ...(extra||{}) };
+  evtQueue.push(evt);
   cachePut("_evtq", evtQueue);
   scheduleEvtFlush();
+  return evt;
 }
 /* Each flush creates one storage key, so batch for 20 s (was 3 s) — about 10x fewer
    keys (#7). Nothing waits on it: the badges update locally, and the queue is saved
@@ -1669,6 +1699,7 @@ function persistSite(){
   saveIndexDebounced();
 }
 function backToList(){
+  hideUndo();
   if(cur){ cur.notes = $("siteNotes").value; persistSite(); }
   cur = null; drawPts=[];
   $("scrSite").classList.remove("active");
@@ -1816,14 +1847,45 @@ function renderLogFeed(){
 /* ---------------- interactions ---------------- */
 function zoneTapped(z){
   if(mode==="track"){
-    const i = STATUS_ORDER.indexOf(z.status);
+    const prev = z.status, i = STATUS_ORDER.indexOf(z.status);
     z.status = STATUS_ORDER[(i+1)%STATUS_ORDER.length];
-    logEvent("status", z);
+    const evt = logEvent("status", z);
     persistSite(); renderZones(); renderZoneList();
+    offerUndo(z, prev, evt);
   }else if(mode==="edit"){
     openZoneSheet(z);
   }
 }
+/* ---- undo the last zone tap (2026-10-28, #13) ----
+   A tap cycles red → green → orange, so one stray tap on a finished zone marks it
+   "needs attention". For 5 s after each tap an Undo bar puts it back. The tap's event
+   is removed from the queue if it hasn't synced yet (taps sync every 20 s); if it has,
+   a correcting event is logged (undo:true), so the zone history stays true. */
+const STATUS_LABEL = {todo:"To do", done:"Done", flag:"Needs attention"};
+let undoTap = null, undoTimer = null;
+function offerUndo(z, prev, evt){
+  undoTap = {siteId: cur.id, zoneId: z.id, prev, evt};
+  $("undoMsg").textContent = `${z.name} → ${STATUS_LABEL[z.status]||z.status}`;
+  $("undoBar").classList.add("on");
+  clearTimeout(undoTimer); undoTimer = setTimeout(hideUndo, 5000);
+}
+function hideUndo(){ clearTimeout(undoTimer); undoTap = null; $("undoBar").classList.remove("on"); }
+function undoLastTap(){
+  const u = undoTap; hideUndo();
+  if(!u || !cur || cur.id!==u.siteId) return;
+  const z = cur.zones.find(x=>x.id===u.zoneId);
+  if(!z) return;
+  z.status = u.prev;
+  const qi = evtQueue.indexOf(u.evt);
+  /* not while a sync is in flight: flushEvents trims the queue by the batch size it sent,
+     so splicing now would make it drop the wrong event */
+  if(qi >= 0 && !evtFlushing){ evtQueue.splice(qi, 1); cachePut("_evtq", evtQueue); }   // never left the device
+  else logEvent("status", z, {undo: true});                                             // synced or syncing: correct it
+  persistSite(); renderZones(); renderZoneList();
+  toast(`${z.name} back to ${STATUS_LABEL[z.status]||z.status}`);
+}
+$("undoBtn").onclick = undoLastTap;
+
 $("zonesSvg").addEventListener("click",ev=>{
   if(mode!=="draw" || !cur) return;
   const svg = $("zonesSvg");
