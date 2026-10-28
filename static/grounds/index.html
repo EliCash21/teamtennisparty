@@ -538,10 +538,22 @@
       <button class="hbtn" id="mSync">Sync now</button>
       <button class="hbtn" id="mAddSite">Add a site</button>
       <button class="hbtn" id="mWho">Your name on this device</button>
+      <button class="hbtn" id="mFeedback">Send feedback</button>
       <button class="hbtn" id="mLogout">Sign out</button>
       <button class="hbtn" id="mClose">Close</button>
     </div>
     <p class="hint" id="weekInfo"></p>
+  </div>
+
+  <div class="sheet" id="shFeedback" style="display:none;">
+    <h2>Send feedback</h2>
+    <p class="hint" style="padding:0 0 4px;">Something broken, confusing, or missing? It goes to John with your name and device. Works without signal: it sends the next time the app syncs.</p>
+    <textarea id="fbText" maxlength="2000" placeholder="e.g. The Leave button didn't work at King Traditional this morning"></textarea>
+    <p class="hint" id="fbErr" style="padding:6px 2px 0; color:var(--todo); display:none;">Please write something first.</p>
+    <div class="sheetbtns">
+      <button class="hbtn primary" id="fbSend">Send</button>
+      <button class="hbtn" id="fbCancel">Cancel</button>
+    </div>
   </div>
 
   <div class="sheet" id="shWho" style="display:none;">
@@ -1593,6 +1605,22 @@ $("whoSave").onclick = ()=>{
 };
 $("whoInput").addEventListener("keydown", e=>{ if(e.key==="Enter") $("whoSave").click(); });
 $("mWho").onclick = openWhoSheet;
+/* Send feedback (#22): saved as a `feedback` event, so it queues offline and syncs like
+   a zone tap. Nothing leaves the app's own storage; the nightly backup on John's Mac
+   adds new ones to "Grounds Feedback.md" in the vault and shows a notification. */
+function deviceKind(){ const u = navigator.userAgent;
+  return /iPad/.test(u) || (/Macintosh/.test(u) && navigator.maxTouchPoints > 1) ? "iPad"
+    : /iPhone/.test(u) ? "iPhone" : /Android/.test(u) ? "Android" : /Macintosh/.test(u) ? "Mac" : "other"; }
+$("mFeedback").onclick = ()=>{ $("fbErr").style.display = "none"; showSheet("shFeedback"); setTimeout(()=>$("fbText").focus(), 50); };
+$("fbCancel").onclick = hideSheets;
+$("fbSend").onclick = async ()=>{
+  const text = $("fbText").value.trim();
+  if(!text){ $("fbErr").style.display = "block"; return; }
+  evtPush({ t: new Date().toISOString(), type: "feedback", text, device: deviceKind(), ...whoStamp() });
+  $("fbText").value = ""; hideSheets();
+  try{ await flushEvents(); }catch(e){}
+  toast(evtQueue.some(e=>e.type==="feedback") ? "Saved — it'll send when you have signal" : "Sent — thanks");
+};
 
 /* pre-download site docs (route sites first) so the field works offline */
 async function warmCache(){
@@ -2158,7 +2186,7 @@ $("zDelete").onclick = ()=>{
 
 /* ---------------- sheets/menu ---------------- */
 function showSheet(id){
-  ["shZone","shMenu","shPhoto","shVisit","shAtt","shWho"].forEach(s=>$(s).style.display = s===id?"block":"none");
+  ["shZone","shMenu","shPhoto","shVisit","shAtt","shWho","shFeedback"].forEach(s=>$(s).style.display = s===id?"block":"none");
   $("overlay").classList.add("on");
 }
 function hideSheets(){ $("overlay").classList.remove("on"); }
