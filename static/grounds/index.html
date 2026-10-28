@@ -407,7 +407,7 @@
     <header>
       <button class="hbtn" id="btnBack" style="padding-left:11px;"><svg class="icon" viewBox="0 0 24 24"><polyline points="15 18 9 12 15 6"/></svg>Sites</button>
       <h1 id="siteTitle">Site</h1>
-      <button class="hbtn" id="btnPhotoMenu">Aerial</button>
+      <button class="hbtn" id="btnPhotoMenu">Site ⋯</button>
     </header>
 
     <div id="visitBar">
@@ -556,9 +556,16 @@
   </div>
 
   <div class="sheet" id="shPhoto" style="display:none;">
-    <h2>Aerial photo</h2>
-    <div class="sheetbtns" style="flex-direction:column;">
-      <button class="hbtn primary" id="pReplace">Add / replace photo</button>
+    <h2 id="pTitle">Site</h2>
+    <div class="sheetbtns" style="flex-direction:column; margin-top:8px;">
+      <button class="hbtn primary" id="pReplace">Add / replace aerial photo</button>
+    </div>
+    <label>Route</label>
+    <select id="pRoute"></select>
+    <label id="pOrderLbl">Order in route</label>
+    <select id="pOrder"></select>
+    <div class="sheetbtns">
+      <button class="hbtn primary" id="pSaveRoute">Save route</button>
       <button class="hbtn" id="pClose">Close</button>
     </div>
     <p class="hint">Tip: screenshot Apple/Google Maps in satellite view, crop to the property, then pick it here from Photos. Photos are auto-compressed and synced. Replacing a photo keeps your zones.</p>
@@ -1661,7 +1668,7 @@ function renderProgressBand(){
   const band = $("progressBand");
   const today = todayRoute();
   const sites = today ? INDEX.sites.filter(s=>s.route===today) : [];
-  if(!today || !sites.length){ band.classList.remove("show"); band.innerHTML=""; return; }
+  if(!today || !sites.length || listSort!=="route"){ band.classList.remove("show"); band.innerHTML=""; return; }
   let total=0, done=0, flag=0;
   sites.forEach(s=>{ const c=s.counts||{}; total+=num(c.total); done+=num(c.done); flag+=num(c.flag); });
   const pct = total ? Math.round(done/total*100) : 0;
@@ -1703,7 +1710,7 @@ function renderWeekBand(){
   $("wbLater").onclick = ()=>{ try{ localStorage.setItem("gt.weekSnooze", todayLocal()); }catch(e){} renderWeekBand(); };
 }
 /* Route order (today's route first) or Most overdue — remembered per device (#14) */
-let listSort = (()=>{ try{ return localStorage.getItem("gt.listSort") || "route"; }catch(e){ return "route"; } })();
+let listSort = (()=>{ try{ return localStorage.getItem("gt.listSort") || "overdue"; }catch(e){ return "overdue"; } })();   // #15: default is need-based
 function paintSortSeg(){ document.querySelectorAll("#sortSeg button").forEach(b=>b.classList.toggle("on", b.dataset.sort===listSort)); }
 document.querySelectorAll("#sortSeg button").forEach(b=> b.onclick = ()=>{
   listSort = b.dataset.sort; try{ localStorage.setItem("gt.listSort", listSort); }catch(e){}
@@ -2210,7 +2217,53 @@ $("mAddSite").onclick = ()=>{
 };
 
 /* ---------------- photo handling ---------------- */
-$("btnPhotoMenu").onclick = ()=>showSheet("shPhoto");
+$("btnPhotoMenu").onclick = openSiteSheet;
+/* Route & order for this site (#15). Routes are still Route 1–5 = Mon–Fri; a site can be
+   moved to another route, put at a position in it, or taken off routes ("Not on a route").
+   The other sites in the old and new route are renumbered 1..n. Saved on _index, which
+   merges field by field (#2), so two devices editing different sites both keep. */
+function routeSites(r, exceptId){
+  return INDEX.sites.filter(s=>s.route===r && s.id!==exceptId)
+    .sort((a,b)=>(a.ro??99)-(b.ro??99) || a.name.localeCompare(b.name));
+}
+function fillOrderSelect(){
+  const r = Number($("pRoute").value) || 0, meta = INDEX.sites.find(s=>s.id===cur.id);
+  $("pOrderLbl").style.display = $("pOrder").style.display = r ? "" : "none";
+  if(!r) return;
+  const others = routeSites(r, cur.id), sel = $("pOrder");
+  sel.innerHTML = "";
+  for(let i=0;i<=others.length;i++){
+    const o = document.createElement("option"); o.value = i+1;
+    o.textContent = i===others.length ? `${i+1} — last` : `${i+1} — before ${others[i].name}`;
+    sel.appendChild(o);
+  }
+  const pos = (meta.route===r) ? INDEX.sites.filter(s=>s.route===r)
+    .sort((a,b)=>(a.ro??99)-(b.ro??99) || a.name.localeCompare(b.name)).findIndex(s=>s.id===cur.id) : -1;
+  sel.value = pos>=0 ? pos+1 : others.length+1;
+}
+function openSiteSheet(){
+  const meta = INDEX.sites.find(s=>s.id===cur.id);
+  $("pTitle").textContent = meta ? meta.name : "Site";
+  const sel = $("pRoute"); sel.innerHTML = `<option value="0">Not on a route</option>`;
+  for(let r=1;r<=5;r++) sel.innerHTML += `<option value="${r}">Route ${r} — ${DAY_NAMES[r]}</option>`;
+  sel.value = (meta && meta.route) || 0;
+  fillOrderSelect();
+  showSheet("shPhoto");
+}
+$("pRoute").onchange = fillOrderSelect;
+$("pSaveRoute").onclick = ()=>{
+  const meta = INDEX.sites.find(s=>s.id===cur.id); if(!meta) return;
+  const r = Number($("pRoute").value) || 0, oldR = meta.route || 0;
+  if(r){
+    const list = routeSites(r, meta.id), at = Math.max(0, Math.min(list.length, Number($("pOrder").value)-1));
+    list.splice(at, 0, meta);
+    meta.route = r; list.forEach((s,i)=>{ s.ro = i+1; });
+  }else{ delete meta.route; delete meta.ro; }
+  if(oldR && oldR!==r) routeSites(oldR).forEach((s,i)=>{ s.ro = i+1; });
+  saveDoc("_index", INDEX);
+  hideSheets();
+  toast(r ? `Saved — Route ${r}, stop ${meta.ro}` : "Saved — not on a route");
+};
 $("pClose").onclick = hideSheets;
 $("pReplace").onclick = ()=>{ hideSheets(); $("filePhoto").click(); };
 $("btnAddPhoto").onclick = ()=>$("filePhoto").click();
