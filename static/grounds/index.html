@@ -121,6 +121,12 @@
   #progressBand .pfill{height:100%; background:var(--done); transition:width .25s;}
   #progressBand .pflag{height:100%; background:var(--flag);}
 
+  #checkBand{display:block; width:calc(100% - 20px); margin:8px 10px 2px; padding:12px 15px; text-align:left;
+    background:rgba(232,163,61,.14); color:var(--flag); border:1px solid rgba(232,163,61,.45); border-radius:13px;
+    font-size:14.5px; font-weight:700; font-family:inherit; min-height:var(--tap);}
+  .checkrow{background:var(--panel); border:1px solid rgba(232,163,61,.45); border-radius:12px; padding:10px 12px; margin-bottom:8px;}
+  .checkrow .cwhy{font-size:12.5px; color:var(--flag); margin-top:3px; line-height:1.4;}
+  .checkrow .cbtns{display:flex; gap:8px; margin-top:8px;}
   #visitBar{display:flex; align-items:center; gap:10px; padding:9px 12px;
     background:var(--panel); border-bottom:1px solid var(--line);}
   #visitInfo{font-size:13px; color:var(--dim); flex:1; min-width:0;}
@@ -336,6 +342,7 @@
       <button class="hbtn icononly" id="btnMenu" title="Menu"></button>
     </header>
     <div id="progressBand"></div>
+    <button id="checkBand" type="button" style="display:none;"></button>
     <div class="searchwrap"><input id="search" type="search" placeholder="Search sites…" autocomplete="off"></div>
     <main><div id="siteList"></div></main>
   </div>
@@ -958,9 +965,13 @@ function evtPush(evt){
 /* ---------------- arrive/leave time tracking ---------------- */
 function getVisit(){ try{ return JSON.parse(localStorage.getItem("gt.visit")); }catch(e){ return null; } }
 function setVisit(v){ v ? localStorage.setItem("gt.visit", JSON.stringify(v)) : localStorage.removeItem("gt.visit"); }
-function leaveVisit(v){
-  evtPush({ t:new Date().toISOString(), type:"leave", siteId:v.siteId, site:v.site,
-            minutes: Math.max(0, Math.round((Date.now()-v.t)/60000)) });
+/* auto=true: closed because you arrived somewhere else, not by tapping Leave — so the
+   time includes the drive, and the visit is flagged for checking (#11) */
+function leaveVisit(v, auto){
+  const e = { t:new Date().toISOString(), type:"leave", siteId:v.siteId, site:v.site,
+              minutes: Math.max(0, Math.round((Date.now()-v.t)/60000)) };
+  if(auto) e.auto = true;
+  evtPush(e);
 }
 function toggleVisit(){
   if(!cur) return;
@@ -969,7 +980,7 @@ function toggleVisit(){
     leaveVisit(v); setVisit(null);
     toast("Left — time logged");
   }else{                                 // arriving here (auto-close any open visit)
-    if(v) leaveVisit(v);
+    if(v) leaveVisit(v, true);
     evtPush({ t:new Date().toISOString(), type:"arrive", siteId:cur.id, site:cur.name });
     setVisit({ siteId:cur.id, site:cur.name, t:Date.now() });
     toast("Arrived");
@@ -983,8 +994,10 @@ function renderVisit(){
   if(v && v.siteId===cur.id){
     const min = Math.round((Date.now()-v.t)/60000);
     b.textContent = "Leave"; b.classList.add("onsite");
-    info.textContent = `On site since ${fmtClock(v.t)} (${min} min)`;
+    info.textContent = `On site since ${fmtClock(v.t)} (${fmtMins(min)})` + (min > VISIT_CAP_MIN ? " — still here? Tap ✎ Time if you forgot Leave." : "");
+    info.style.color = min > VISIT_CAP_MIN ? "var(--flag)" : "";
   }else{
+    info.style.color = "";
     b.textContent = "Arrive"; b.classList.remove("onsite");
     info.textContent = v ? `Still checked in at ${v.site}` : "";
   }
@@ -1113,24 +1126,69 @@ async function loadSiteTime(){
 let editingVisit = null;   // {aT,lT,siteId} when editing an existing visit; null = adding
 let histVisits = [];       // visits currently shown in the History edit list (index = data-vi)
 
-/* pair arrive->leave into visits, INCLUDING still-open ones (no leave yet) */
+/* pair arrive->leave into visits, INCLUDING still-open ones (no leave yet).
+   Each visit also carries `auto` (closed by arriving elsewhere) and `checked`
+   (saved through the visit editor) for the "needs checking" list (#11). */
 function pairVisitsAll(events){
   const evs = (events||[]).slice().sort((a,b)=> (a.t||"") < (b.t||"") ? -1 : 1);
   const open = {}, visits = [];
+  /* Before 2026-10-28 an auto-close wasn't marked; it shows as a leave written within
+     a couple of seconds of an arrive at a different site. */
+  const arrives = evs.filter(e=>e.type==="arrive");
+  const autoByTiming = e => arrives.some(a=> a.siteId!==e.siteId && Math.abs(new Date(a.t)-new Date(e.t)) < 2500);
+  const openVisit = a => ({siteId:a.siteId, site:a.site, aT:a.t, lT:null, open:true, checked:!!a.checked});
   evs.forEach(e=>{
     if(e.type==="arrive"){
-      if(open[e.siteId]){ const a=open[e.siteId]; visits.push({siteId:a.siteId, site:a.site, aT:a.t, lT:null, open:true}); }
+      if(open[e.siteId]) visits.push(openVisit(open[e.siteId]));
       open[e.siteId] = e;
     }else if(e.type==="leave"){
       const a = open[e.siteId]; delete open[e.siteId];
       let min = e.minutes;
       if(min==null && a) min = Math.round((new Date(e.t)-new Date(a.t))/60000);
-      visits.push({siteId:e.siteId, site:e.site||(a&&a.site)||"", aT:a?a.t:null, lT:e.t, min, open:false});
+      visits.push({siteId:e.siteId, site:e.site||(a&&a.site)||"", aT:a?a.t:null, lT:e.t, min, open:false,
+                   auto: !e.checked && (!!e.auto || autoByTiming(e)), checked: !!e.checked});
     }
   });
-  Object.values(open).forEach(a=> visits.push({siteId:a.siteId, site:a.site, aT:a.t, lT:null, open:true}));
+  Object.values(open).forEach(a=> visits.push(openVisit(a)));
   visits.sort((a,b)=> (a.aT||a.lT||"") < (b.aT||b.lT||"") ? -1 : 1);
   return visits;
+}
+
+/* ---------------- visits that need a person to check them (2026-10-28, #11) ----------------
+   Nothing is changed automatically — the time stays as recorded until someone edits it
+   or taps "Looks right". The 3-hour line is from the real data: the longest genuine
+   visit so far was 114 min; the one runaway (a forgotten Leave) was 19 h. */
+const VISIT_CAP_MIN = 180;
+function visitIssue(v){
+  if(v.checked) return null;
+  const startedMs = new Date(v.aT || v.lT).getTime();
+  if(v.open){
+    const ageMin = (Date.now() - startedMs) / 60000;
+    if(startedMs < dayStartTs().getTime()) return "still checked in from an earlier day — forgot to tap Leave?";
+    if(ageMin > VISIT_CAP_MIN) return `checked in for ${fmtMins(ageMin)} — forgot to tap Leave?`;
+    return null;
+  }
+  if(v.min != null && v.min > VISIT_CAP_MIN) return `${fmtMins(v.min)} is longer than usual — forgot to tap Leave?`;
+  if(v.auto) return "closed automatically when you arrived at the next site — the time includes the drive";
+  return null;
+}
+function visitsNeedingCheck(events){
+  return pairVisitsAll(events).map(v=>({v, why: visitIssue(v)})).filter(x=>x.why);
+}
+/* "Looks right": rewrite the visit with the same times, marked checked */
+async function markVisitChecked(v){
+  if(!(await ensureSyncedBeforeEdit())) return;
+  editingVisit = {aT:v.aT, lT:v.lT, siteId:v.siteId};
+  try{
+    const sources = await oldVisitSources();
+    const fresh = [{t:v.aT, type:"arrive", siteId:v.siteId, site:v.site, ...(v.open ? {checked:true} : {})}];
+    if(v.lT) fresh.push({t:v.lT, type:"leave", siteId:v.siteId, site:v.site, minutes:v.min, checked:true});
+    await addVisitEvents(fresh);
+    await removeOldVisitEvents(sources);
+  }catch(e){ toast(e.message==="notfound" ? VISIT_NOTFOUND : "Couldn’t reach the server — try again with signal"); return; }
+  editingVisit = null;
+  toast("Marked as checked");
+  await afterVisitChange();
 }
 
 /* local date/time <-> ISO (device-local, i.e. Abbotsford time) */
@@ -1266,8 +1324,9 @@ async function saveVisit(){
   try{
     const sources = editingVisit ? await oldVisitSources() : [];
     step = "write";
-    const fresh = [{t:arriveIso, type:"arrive", siteId, site}];
-    if(leaveIso) fresh.push({t:leaveIso, type:"leave", siteId, site, minutes});
+    /* anything saved here was looked at by a person, so it's no longer flagged (#11) */
+    const fresh = [{t:arriveIso, type:"arrive", siteId, site, ...(isOpen ? {checked:true} : {})}];
+    if(leaveIso) fresh.push({t:leaveIso, type:"leave", siteId, site, minutes, checked:true});
     await addVisitEvents(fresh);
     step = "remove";
     if(sources.length) await removeOldVisitEvents(sources);
@@ -1480,8 +1539,17 @@ function renderProgressBand(){
     </div>
     <div class="ptrack"><div class="pfill" style="width:${pct}%"></div></div>`;
 }
+/* "N visits need checking" banner — from the synced events (the last two months), so
+   it also catches a check-in left open on another device (#11) */
+function renderCheckBand(){
+  const n = visitsNeedingCheck(stEvents||[]).length, b = $("checkBand");
+  b.style.display = n ? "block" : "none";
+  b.textContent = n ? `⚠ ${n} visit${n===1?"":"s"} need${n===1?"s":""} checking — tap to review` : "";
+}
+$("checkBand").onclick = ()=>{ openHistory(); };
 function renderList(){
   renderProgressBand();
+  renderCheckBand();
   renderOpenBtn();
   const q = $("search").value.trim().toLowerCase();
   const wrap = $("siteList"); wrap.innerHTML = "";
@@ -2299,8 +2367,9 @@ let histEvents = null;
 function openHistory(){
   $("scrList").classList.remove("active");
   $("scrHistory").classList.add("active");
-  loadHistory(false);
+  loadHistory(true);     // always fresh: it used to show the copy from the first open until Refresh (#11)
 }
+let histLoadedAt = null;
 function closeHistory(){
   $("scrHistory").classList.remove("active");
   $("scrList").classList.add("active");
@@ -2308,21 +2377,26 @@ function closeHistory(){
 async function loadHistory(force){
   const status = $("histStatus"), content = $("histContent");
   if(histEvents && !force){ renderHistory(histEvents); return; }
-  status.style.display = "block"; status.textContent = "Loading…"; content.innerHTML = "";
+  status.style.display = "block"; status.textContent = "Loading…";
+  if(histEvents) renderHistory(histEvents); else content.innerHTML = "";   // show the last copy while loading
   try{
+    await flushEvents();                         // include this device's latest taps
+    if(evtQueue.length) throw new Error("offline");
     /* Fetch the month docs directly. (Don't list keys + filter for "_events:" —
        the stored KV key is "_events%3A2026-06" with the colon URL-encoded, so the
        filter matched nothing and History showed zero. This builds the keys the same
        way flushEvents writes them, so they always line up.) */
     const events = await fetchAllEvents(15);      // ~15 months back, for month/year rollups
     events.sort((a,b)=> (a.t||"") < (b.t||"") ? -1 : 1);
-    histEvents = events;
+    histEvents = events; histLoadedAt = Date.now();
     if(eventsTruncated){             // never silently short: say so (#7)
       status.textContent = "⚠ Some older visits didn't load — totals may be low. Tell John; the nightly tidy-up should fix it.";
     }else status.style.display = "none";
     renderHistory(events);
   }catch(e){
-    status.textContent = "Couldn't load history — check your connection and try Refresh.";
+    status.textContent = histEvents
+      ? `Offline — showing History as loaded at ${fmtClock(histLoadedAt)}. Recent taps may be missing; tap Refresh with signal.`
+      : "Couldn't load history — check your connection and try Refresh.";
   }
 }
 /* ---- History period model (Day / Week / Month / Year) ---- */
@@ -2393,8 +2467,25 @@ function renderHistory(events){
   const siteCount=new Set(inRange.map(v=>v.siteId)).size;
   const dayCount=new Set(inRange.map(v=>visitDate(v).toDateString())).size;
 
+  /* visits that need a person to look at them (#11), newest first */
+  const toCheck = visitsNeedingCheck(events).reverse();
+  let html = "";
+  if(toCheck.length){
+    html += `<div class="histsection"><h3 style="color:var(--flag);">Needs checking (${toCheck.length})</h3>`;
+    toCheck.forEach(({v, why}, i)=>{
+      const d = visitDate(v).toLocaleDateString([], {weekday:"short", month:"short", day:"numeric"});
+      const aTxt = v.aT ? fmtClock(new Date(v.aT).getTime()) : "—";
+      const line = v.open ? `${aTxt} → still checked in` : `${aTxt} → ${v.lT ? fmtClock(new Date(v.lT).getTime()) : "—"} · ${fmtMins(visitMinutes(v))}`;
+      html += `<div class="checkrow"><div class="vsite">${esc(v.site||"—")}</div>
+        <div class="vtime">${esc(d)} · ${line}</div><div class="cwhy">${esc(why)}</div>
+        <div class="cbtns"><button class="vbtn cfix" data-ci="${i}">Fix the time</button>
+        <button class="vbtn cok" data-ci="${i}">Looks right</button></div></div>`;
+    });
+    html += `</div>`;
+  }
+
   /* period selector + stepper */
-  let html=`<div class="seg" id="periodSeg">`
+  html+=`<div class="seg" id="periodSeg">`
     + ["day","week","month","year"].map(p=>`<button data-p="${p}" class="${p===histPeriod?'on':''}">${p[0].toUpperCase()+p.slice(1)}</button>`).join("")
     + `</div>`;
   html+=`<div class="periodnav"><button id="periodPrev" aria-label="Previous">◀</button>
@@ -2477,6 +2568,8 @@ function renderHistory(events){
   content.querySelectorAll(".vdel").forEach(b=> b.onclick=()=>{
     const v=histVisits[+b.dataset.vi]; editingVisit={aT:v.aT, lT:v.lT, siteId:v.siteId}; deleteVisit();
   });
+  content.querySelectorAll(".cfix").forEach(b=> b.onclick=()=>openEditFromVisit(toCheck[+b.dataset.ci].v));
+  content.querySelectorAll(".cok").forEach(b=> b.onclick=()=>{ b.disabled = true; markVisitChecked(toCheck[+b.dataset.ci].v); });
 }
 
 /* ---------------- misc wiring ---------------- */
