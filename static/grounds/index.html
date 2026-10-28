@@ -131,6 +131,10 @@
   #checkBand{display:block; width:calc(100% - 20px); margin:8px 10px 2px; padding:12px 15px; text-align:left;
     background:rgba(232,163,61,.14); color:var(--flag); border:1px solid rgba(232,163,61,.45); border-radius:13px;
     font-size:14.5px; font-weight:700; font-family:inherit; min-height:var(--tap);}
+  #weekBand{margin:8px 10px 2px; padding:12px 15px; background:var(--panel); border:1px solid var(--line);
+    border-radius:13px; font-size:14px; line-height:1.4;}
+  #weekBand b{display:block; font-size:14.5px; margin-bottom:2px;}
+  #weekBand .wbtns{display:flex; gap:8px; margin-top:9px;}
   .checkrow{background:var(--panel); border:1px solid rgba(232,163,61,.45); border-radius:12px; padding:10px 12px; margin-bottom:8px;}
   .checkrow .cwhy{font-size:12.5px; color:var(--flag); margin-top:3px; line-height:1.4;}
   .checkrow .cbtns{display:flex; gap:8px; margin-top:8px;}
@@ -365,6 +369,7 @@
     </header>
     <div id="progressBand"></div>
     <button id="checkBand" type="button" style="display:none;"></button>
+    <div id="weekBand" style="display:none;"></div>
     <div class="searchwrap"><input id="search" type="search" placeholder="Search sites…" autocomplete="off">
       <div class="seg" id="sortSeg"><button data-sort="route">Route order</button><button data-sort="overdue">Most overdue</button></div></div>
     <main><div id="siteList"></div></main>
@@ -1448,7 +1453,7 @@ $("btnEditTimes").onclick = ()=>{
 /* ---------------- index ---------------- */
 function newIndex(){
   return { sites: SEED_SITES.map(n=>({id:uid(), name:n, hasPhoto:false, counts:{total:0,done:0,flag:0}})),
-           weekStarted: new Date().toISOString().slice(0,10), history: [] };
+           weekStarted: todayLocal(), history: [] };
 }
 async function loadIndex(){
   /* cache-first: show what we have instantly, refresh in background */
@@ -1675,6 +1680,28 @@ function renderCheckBand(){
   b.textContent = n ? `⚠ ${n} visit${n===1?"":"s"} need${n===1?"s":""} checking — tap to review` : "";
 }
 $("checkBand").onclick = ()=>{ openHistory(); };
+/* "New week" prompt (#12). Zones only go back to To do when someone starts a new week,
+   so on the first open of a new week (Monday onward) the list asks. Nothing resets on
+   its own. "Not now" hides it on this device until tomorrow. Only shown when some zone
+   is still done or flagged — otherwise there's nothing to reset. */
+function todayLocal(){ return isoToLocalDate(new Date().toISOString()); }
+function thisMonday(){ return isoToLocalDate(weekStartTs().toISOString()); }
+function weekIsStale(){ return !!INDEX && (INDEX.weekStarted||"") < thisMonday(); }
+function prettyDay(ymd){ const [y,m,d] = (ymd||"").split("-").map(Number);
+  return y ? new Date(y,m-1,d).toLocaleDateString(undefined,{weekday:"short", month:"short", day:"numeric"}) : "?"; }
+function renderWeekBand(){
+  const b = $("weekBand");
+  let snoozed = ""; try{ snoozed = localStorage.getItem("gt.weekSnooze") || ""; }catch(e){}
+  const carried = (INDEX.sites||[]).reduce((n,s)=>n + ((s.counts&&(s.counts.done+s.counts.flag))||0), 0);
+  const show = weekIsStale() && carried > 0 && snoozed !== todayLocal();
+  b.style.display = show ? "block" : "none";
+  if(!show) return;
+  b.innerHTML = `<b>🗓 New week</b>${carried} zone${carried===1?"":"s"} still show${carried===1?"s":""} last week's colours
+    (week started ${esc(prettyDay(INDEX.weekStarted))}). Start a new week to set every zone back to To do?
+    <div class="wbtns"><button class="hbtn primary" id="wbStart">Start new week</button><button class="hbtn" id="wbLater">Not now</button></div>`;
+  $("wbStart").onclick = ()=>startNewWeek(true);
+  $("wbLater").onclick = ()=>{ try{ localStorage.setItem("gt.weekSnooze", todayLocal()); }catch(e){} renderWeekBand(); };
+}
 /* Route order (today's route first) or Most overdue — remembered per device (#14) */
 let listSort = (()=>{ try{ return localStorage.getItem("gt.listSort") || "route"; }catch(e){ return "route"; } })();
 function paintSortSeg(){ document.querySelectorAll("#sortSeg button").forEach(b=>b.classList.toggle("on", b.dataset.sort===listSort)); }
@@ -1686,6 +1713,7 @@ paintSortSeg();
 function renderList(){
   renderProgressBand();
   renderCheckBand();
+  renderWeekBand();
   renderOpenBtn();
   const q = $("search").value.trim().toLowerCase();
   const wrap = $("siteList"); wrap.innerHTML = "";
@@ -2130,16 +2158,29 @@ function hideSheets(){ $("overlay").classList.remove("on"); }
 $("overlay").addEventListener("click",ev=>{ if(ev.target===$("overlay")) hideSheets(); });
 
 $("btnMenu").onclick = ()=>{
-  $("weekInfo").textContent = `Current week started ${INDEX.weekStarted}. “New week” logs this week's progress to history, then resets every zone to “To do”.`;
+  $("weekInfo").textContent = `Current week started ${prettyDay(INDEX.weekStarted)}. “New week” logs this week's progress to history, then resets every zone to “To do”.`;
   showSheet("shMenu");
 };
 $("mClose").onclick = hideSheets;
 $("mSync").onclick = async ()=>{ hideSheets(); await flushDirty(); await flushEvents(); await loadIndex(); renderList(); toast("Synced"); };
 $("mLogout").onclick = ()=>{ localStorage.removeItem("gt.token"); localStorage.removeItem("gt.auth"); location.reload(); };
-$("mNewWeek").onclick = async ()=>{
-  if(!confirm("Log this week and reset all zone statuses to To do?")) return;
+$("mNewWeek").onclick = ()=>startNewWeek(false);
+/* fromBanner: the week prompt (#12). Re-reads the index first, so if another device
+   already started this week, this one doesn't wipe that week's progress. */
+async function startNewWeek(fromBanner){
+  if(fromBanner){
+    setPill("busy","checking…");
+    await loadIndex();
+    if(!weekIsStale()){ renderList(); toast(`This week was already started (${prettyDay(INDEX.weekStarted)})`); return; }
+    if(!confirm("Start a new week? This logs last week's progress to history, then sets every zone back to To do.")) return;
+  }else{
+    const msg = weekIsStale()
+      ? "Log this week and reset all zone statuses to To do?"
+      : `This week was already started on ${prettyDay(INDEX.weekStarted)} (on this or another device). Reset again? Zones done since then go back to To do.`;
+    if(!confirm(msg)) return;
+  }
   hideSheets(); setPill("busy","resetting…");
-  const entry = { week: INDEX.weekStarted, endedAt: new Date().toISOString().slice(0,10), sites: [] };
+  const entry = { week: INDEX.weekStarted, endedAt: todayLocal(), ...whoStamp(), sites: [] };
   for(const meta of INDEX.sites){
     if(!meta.counts || !meta.counts.total) continue;
     const key = "site:"+meta.id;
@@ -2153,12 +2194,12 @@ $("mNewWeek").onclick = async ()=>{
     refreshCounts(doc);
   }
   INDEX.history.push(entry);
-  INDEX.weekStarted = new Date().toISOString().slice(0,10);
+  INDEX.weekStarted = todayLocal();
   await saveDoc("_index", INDEX);
-  evtQueue.push({t:new Date().toISOString(), type:"new_week"});
+  evtQueue.push({t:new Date().toISOString(), type:"new_week", ...whoStamp()});
   cachePut("_evtq", evtQueue); scheduleEvtFlush();
   renderList(); toast("New week started");
-};
+}
 $("mAddSite").onclick = ()=>{
   const name = prompt("Site name:");
   if(name && name.trim()){
