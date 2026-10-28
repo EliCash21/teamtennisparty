@@ -236,6 +236,10 @@
   .statcard .num{font-size:21px; font-weight:800; color:var(--accent);}
   .statcard .lbl{font-size:10.5px; color:var(--dim); text-transform:uppercase; letter-spacing:.04em; margin-top:4px;}
   #periodSeg{margin:12px 12px 8px;}
+  .whofilter{display:flex; align-items:center; gap:10px; margin:12px 12px 0;}
+  .whofilter label{font-size:13px; color:var(--dim); font-weight:700; text-transform:uppercase; letter-spacing:.06em;}
+  .whofilter select{flex:1; padding:10px; font-size:15px; border-radius:10px; min-height:var(--tap);
+    border:1px solid var(--line); background:var(--panel2); color:var(--text); font-family:inherit;}
   #periodSeg button{flex:1;}
   .periodnav{display:flex; align-items:center; justify-content:space-between; gap:10px; margin:0 12px 14px;}
   .periodnav button{flex:0 0 auto; width:46px; height:42px; border-radius:10px; border:1px solid var(--line);
@@ -528,10 +532,22 @@
       <button class="hbtn primary" id="mNewWeek">Start new week (reset statuses)</button>
       <button class="hbtn" id="mSync">Sync now</button>
       <button class="hbtn" id="mAddSite">Add a site</button>
+      <button class="hbtn" id="mWho">Your name on this device</button>
       <button class="hbtn" id="mLogout">Sign out</button>
       <button class="hbtn" id="mClose">Close</button>
     </div>
     <p class="hint" id="weekInfo"></p>
+  </div>
+
+  <div class="sheet" id="shWho" style="display:none;">
+    <h2>Who's using this device?</h2>
+    <p class="hint" style="padding:0 0 4px;">Your name goes on the visits, zone taps and notes you make here, so time and work can be told apart. Asked once per device.</p>
+    <label>Name</label>
+    <input type="text" id="whoInput" maxlength="30" placeholder="e.g. John" autocomplete="given-name">
+    <p class="hint" id="whoErr" style="padding:6px 2px 0; color:var(--todo); display:none;">Please enter a name.</p>
+    <div class="sheetbtns">
+      <button class="hbtn primary" id="whoSave">Save</button>
+    </div>
   </div>
 
   <div class="sheet" id="shPhoto" style="display:none;">
@@ -978,7 +994,7 @@ function logEvent(type, z, extra){
   const evt = { t: new Date().toISOString(), type,
     siteId: cur?cur.id:null, site: cur?cur.name:null,
     zoneId: z?z.id:null, zone: z?z.name:null, ztype: z?z.type:null,
-    status: z?z.status:null, ...(extra||{}) };
+    status: z?z.status:null, ...whoStamp(), ...(extra||{}) };
   evtQueue.push(evt);
   cachePut("_evtq", evtQueue);
   scheduleEvtFlush();
@@ -1013,7 +1029,7 @@ function setVisit(v){ v ? localStorage.setItem("gt.visit", JSON.stringify(v)) : 
    time includes the drive, and the visit is flagged for checking (#11) */
 function leaveVisit(v, auto){
   const e = { t:new Date().toISOString(), type:"leave", siteId:v.siteId, site:v.site,
-              minutes: Math.max(0, Math.round((Date.now()-v.t)/60000)) };
+              minutes: Math.max(0, Math.round((Date.now()-v.t)/60000)), ...whoStamp() };
   if(auto) e.auto = true;
   evtPush(e);
 }
@@ -1025,7 +1041,7 @@ function toggleVisit(){
     toast("Left — time logged");
   }else{                                 // arriving here (auto-close any open visit)
     if(v) leaveVisit(v, true);
-    evtPush({ t:new Date().toISOString(), type:"arrive", siteId:cur.id, site:cur.name });
+    evtPush({ t:new Date().toISOString(), type:"arrive", siteId:cur.id, site:cur.name, ...whoStamp() });
     setVisit({ siteId:cur.id, site:cur.name, t:Date.now() });
     toast("Arrived");
   }
@@ -1181,7 +1197,7 @@ function pairVisitsAll(events){
      a couple of seconds of an arrive at a different site. */
   const arrives = evs.filter(e=>e.type==="arrive");
   const autoByTiming = e => arrives.some(a=> a.siteId!==e.siteId && Math.abs(new Date(a.t)-new Date(e.t)) < 2500);
-  const openVisit = a => ({siteId:a.siteId, site:a.site, aT:a.t, lT:null, open:true, checked:!!a.checked});
+  const openVisit = a => ({siteId:a.siteId, site:a.site, aT:a.t, lT:null, open:true, checked:!!a.checked, who:a.who||""});
   evs.forEach(e=>{
     if(e.type==="arrive"){
       if(open[e.siteId]) visits.push(openVisit(open[e.siteId]));
@@ -1191,7 +1207,8 @@ function pairVisitsAll(events){
       let min = e.minutes;
       if(min==null && a) min = Math.round((new Date(e.t)-new Date(a.t))/60000);
       visits.push({siteId:e.siteId, site:e.site||(a&&a.site)||"", aT:a?a.t:null, lT:e.t, min, open:false,
-                   auto: !e.checked && (!!e.auto || autoByTiming(e)), checked: !!e.checked});
+                   auto: !e.checked && (!!e.auto || autoByTiming(e)), checked: !!e.checked,
+                   who: (a && a.who) || e.who || ""});
     }
   });
   Object.values(open).forEach(a=> visits.push(openVisit(a)));
@@ -1226,8 +1243,9 @@ async function markVisitChecked(v){
   editingVisit = {aT:v.aT, lT:v.lT, siteId:v.siteId};
   try{
     const sources = await oldVisitSources();
-    const fresh = [{t:v.aT, type:"arrive", siteId:v.siteId, site:v.site, ...(v.open ? {checked:true} : {})}];
-    if(v.lT) fresh.push({t:v.lT, type:"leave", siteId:v.siteId, site:v.site, minutes:v.min, checked:true});
+    const whoTag = v.who ? {who: v.who} : {};      // "Looks right" doesn't change whose visit it is (#16)
+    const fresh = [{t:v.aT, type:"arrive", siteId:v.siteId, site:v.site, ...whoTag, ...(v.open ? {checked:true} : {})}];
+    if(v.lT) fresh.push({t:v.lT, type:"leave", siteId:v.siteId, site:v.site, minutes:v.min, ...whoTag, checked:true});
     await addVisitEvents(fresh);
     await removeOldVisitEvents(sources);
   }catch(e){ toast(e.message==="notfound" ? VISIT_NOTFOUND : "Couldn’t reach the server — try again with signal"); return; }
@@ -1279,12 +1297,12 @@ function openVisitEditor(opts){
   $("vLeave").disabled = !!opts.open;
   $("vDelete").style.display = add ? "none" : "block";
   $("vErr").style.display="none";
-  editingVisit = add ? null : {aT:opts.aT||null, lT:opts.lT||null, siteId:opts.siteId};
+  editingVisit = add ? null : {aT:opts.aT||null, lT:opts.lT||null, siteId:opts.siteId, who:opts.who||""};
   updateVDur();
   showSheet("shVisit");
 }
 function openEditFromVisit(v){
-  openVisitEditor({ mode:"edit", siteId:v.siteId, aT:v.aT, lT:v.lT, open:v.open,
+  openVisitEditor({ mode:"edit", siteId:v.siteId, aT:v.aT, lT:v.lT, open:v.open, who:v.who,
     date:isoToLocalDate(v.aT||v.lT),
     arrive:v.aT?isoToLocalTime(v.aT):"", leave:v.lT?isoToLocalTime(v.lT):"" });
 }
@@ -1370,8 +1388,11 @@ async function saveVisit(){
     const sources = editingVisit ? await oldVisitSources() : [];
     step = "write";
     /* anything saved here was looked at by a person, so it's no longer flagged (#11) */
-    const fresh = [{t:arriveIso, type:"arrive", siteId, site, ...(isOpen ? {checked:true} : {})}];
-    if(leaveIso) fresh.push({t:leaveIso, type:"leave", siteId, site, minutes, checked:true});
+    /* whose visit: an edit keeps the original person (or none, for visits from before
+       names); a new visit is this device's (#16) */
+    const whoTag = editingVisit ? (editingVisit.who ? {who: editingVisit.who} : {}) : whoStamp();
+    const fresh = [{t:arriveIso, type:"arrive", siteId, site, ...whoTag, ...(isOpen ? {checked:true} : {})}];
+    if(leaveIso) fresh.push({t:leaveIso, type:"leave", siteId, site, minutes, ...whoTag, checked:true});
     await addVisitEvents(fresh);
     step = "remove";
     if(sources.length) await removeOldVisitEvents(sources);
@@ -1540,7 +1561,26 @@ async function enterApp(){
   loadSiteTime();
   loadDayNotes().then(renderOpenBtn);
   warmCache();
+  if(!whoAmI()) openWhoSheet();          // ask once per device (#16)
 }
+
+/* ---------------- who did what (2026-10-28, #16) ----------------
+   Each device has a name, asked once and changeable from the menu. It's stamped as
+   `who` on arrive/leave and zone-tap events, notes/tasks (and who ticked a task
+   done), and attachments. Editing a visit keeps the original person's name, so
+   fixing someone else's time doesn't move their hours to you. Anything recorded
+   before names existed has no `who` and shows as "(before names)". */
+function whoAmI(){ try{ return (localStorage.getItem("gt.who")||"").trim(); }catch(e){ return ""; } }
+function whoStamp(){ const w = whoAmI(); return w ? {who: w} : {}; }
+function openWhoSheet(){ $("whoInput").value = whoAmI(); $("whoErr").style.display = "none"; showSheet("shWho"); setTimeout(()=>$("whoInput").focus(), 50); }
+$("whoSave").onclick = ()=>{
+  const v = $("whoInput").value.trim().slice(0, 30);
+  if(!v){ $("whoErr").style.display = "block"; return; }
+  try{ localStorage.setItem("gt.who", v); }catch(e){}
+  hideSheets(); toast(`Saved — this device is ${v}`);
+};
+$("whoInput").addEventListener("keydown", e=>{ if(e.key==="Enter") $("whoSave").click(); });
+$("mWho").onclick = openWhoSheet;
 
 /* pre-download site docs (route sites first) so the field works offline */
 async function warmCache(){
@@ -1875,15 +1915,21 @@ function fmtLogTs(ts){
 function addLogEntry(text, type){
   if(!cur || !text.trim()) return;
   cur.log.push({ id: uid(), ts: new Date().toISOString(), type,
-    text: text.trim(), status: type==="task" ? "open" : null, doneTs: null });
+    text: text.trim(), status: type==="task" ? "open" : null, doneTs: null, ...whoStamp() });
   persistSite(); renderLog();
+}
+/* " · John" after a timestamp, or nothing for entries from before names (#16) */
+function byWho(w){ return w ? ` · ${esc(w)}` : ""; }
+/* mark a task open/done, recording who closed it */
+function setTaskDone(e, done){
+  if(done){ e.status = "done"; e.doneTs = new Date().toISOString(); const w = whoAmI(); if(w) e.doneBy = w; else delete e.doneBy; }
+  else{ e.status = "open"; e.doneTs = null; delete e.doneBy; }
 }
 function toggleLogEntry(id){
   if(!cur) return;
   const e = cur.log.find(x=>x.id===id);
   if(!e || e.type!=="task") return;
-  if(e.status==="open"){ e.status="done"; e.doneTs=new Date().toISOString(); }
-  else{ e.status="open"; e.doneTs=null; }
+  setTaskDone(e, e.status==="open");
   persistSite(); renderLog();
 }
 function renderLog(){ renderOpenList(); renderLogFeed(); }
@@ -1900,7 +1946,7 @@ function renderOpenList(){
     const d = document.createElement("div");
     d.className = "openitem";
     d.innerHTML = `<span class="lico open">${ICONS.square}</span>
-      <div><div class="ltxt">${esc(e.text)}</div><div class="lts">logged ${relTime(e.ts)}</div></div>`;
+      <div><div class="ltxt">${esc(e.text)}</div><div class="lts">logged ${relTime(e.ts)}${byWho(e.who)}</div></div>`;
     d.onclick = ()=>toggleLogEntry(e.id);
     wrap.appendChild(d);
   });
@@ -1920,7 +1966,7 @@ function renderLogFeed(){
     d.className = "logitem" + (isTask ? " tappable" : "");
     const icon = !isTask ? ICONS.note : (closed ? ICONS.checksquare : ICONS.square);
     const icoCls = !isTask ? "note" : (closed ? "done" : "open");
-    const tsLine = fmtLogTs(e.ts) + (closed ? ` · done ${relTime(e.doneTs)}` : "");
+    const tsLine = fmtLogTs(e.ts) + byWho(e.who) + (closed ? ` · done ${relTime(e.doneTs)}${e.doneBy ? " by " + esc(e.doneBy) : ""}` : "");
     d.innerHTML = `<span class="lico ${icoCls}">${icon}</span>
       <div><div class="ltxt ${closed?"closed":""}">${esc(e.text)}</div><div class="lts">${tsLine}</div></div>`;
     if(isTask) d.onclick = ()=>toggleLogEntry(e.id);
@@ -2077,7 +2123,7 @@ $("zDelete").onclick = ()=>{
 
 /* ---------------- sheets/menu ---------------- */
 function showSheet(id){
-  ["shZone","shMenu","shPhoto","shVisit","shAtt"].forEach(s=>$(s).style.display = s===id?"block":"none");
+  ["shZone","shMenu","shPhoto","shVisit","shAtt","shWho"].forEach(s=>$(s).style.display = s===id?"block":"none");
   $("overlay").classList.add("on");
 }
 function hideSheets(){ $("overlay").classList.remove("on"); }
@@ -2224,7 +2270,7 @@ async function addPhotoAttachment(file){
     const thumb = await makeThumb(file, 220);  // tiny preview kept in the site doc
     const id = uid(), ts = new Date().toISOString();
     await saveDoc(attKey(id), {data:full, kind:"photo", name:file.name||"photo.jpg", ts});
-    cur.attachments.push({id, ts, kind:"photo", name:file.name||"photo.jpg", note:"", thumb});
+    cur.attachments.push({id, ts, kind:"photo", name:file.name||"photo.jpg", note:"", thumb, ...whoStamp()});
     persistSite();
     renderAttachments();
     toast("Photo added");
@@ -2238,7 +2284,7 @@ async function addDocAttachment(file){
     const data = await readFileDataURL(file);
     const id = uid(), ts = new Date().toISOString();
     await saveDoc(attKey(id), {data, kind:"doc", name:file.name||"file", ts});
-    cur.attachments.push({id, ts, kind:"doc", name:file.name||"file", note:""});
+    cur.attachments.push({id, ts, kind:"doc", name:file.name||"file", note:"", ...whoStamp()});
     persistSite();
     renderAttachments();
     toast("File added");
@@ -2301,7 +2347,7 @@ async function openAttachment(id){
   if(!meta) return;
   attCur = id;
   $("attSheetTitle").textContent = meta.kind==="photo" ? "Photo" : (meta.name||"File");
-  $("attMeta").textContent = "Added " + fmtWhen(meta.ts);
+  $("attMeta").textContent = "Added " + fmtWhen(meta.ts) + (meta.who ? " by " + meta.who : "");
   $("attNote").value = meta.note||"";
   const view = $("attView");
   view.innerHTML = '<p class="hint" style="padding:2px;">Loading…</p>';
@@ -2434,7 +2480,7 @@ function renderOpenAll(){
     d.className = "openitem all";
     d.innerHTML = `<button class="ockb" title="Mark done">${ICONS.square}</button>
       <div class="obody"><div class="ltxt">${esc(r.entry.text)}</div>
-      <div class="lts">${esc(r.siteName)} · logged ${relTime(r.entry.ts)}</div></div>`;
+      <div class="lts">${esc(r.siteName)} · logged ${relTime(r.entry.ts)}${byWho(r.entry.who)}</div></div>`;
     d.querySelector(".ockb").onclick = ev=>{ ev.stopPropagation(); completeOpenRow(i); };
     if(!r.general) d.onclick = ()=>{ closeOpenScreen(); openSite(r.siteId); };
     wrap.appendChild(d);
@@ -2443,7 +2489,7 @@ function renderOpenAll(){
 async function completeOpenRow(i){
   const r = openAllRows[i];
   if(!r) return;
-  r.entry.status = "done"; r.entry.doneTs = new Date().toISOString();
+  setTaskDone(r.entry, true);
   if(r.general){
     saveDayNotes(); renderDayFeed();
   }else{
@@ -2463,7 +2509,7 @@ function submitDayInput(){
   const v = $("dayInput").value;
   if(!v.trim() || !DAY) return;
   const entry = { id: uid(), ts: new Date().toISOString(), type: dayType,
-    text: v.trim(), status: dayType==="task" ? "open" : null, doneTs: null };
+    text: v.trim(), status: dayType==="task" ? "open" : null, doneTs: null, ...whoStamp() };
   DAY.log.push(entry);
   $("dayInput").value = "";
   saveDayNotes();
@@ -2472,8 +2518,7 @@ function submitDayInput(){
   renderOpenBtn();
 }
 function toggleDayEntry(e){
-  if(e.status==="open"){ e.status="done"; e.doneTs=new Date().toISOString(); }
-  else{ e.status="open"; e.doneTs=null; }
+  setTaskDone(e, e.status==="open");
   saveDayNotes();
   openAllRows = openAllRows.filter(r=>!(r.general && r.entry.id===e.id));
   if(e.status==="open") openAllRows.push({general:true, siteName:"General", entry:e});
@@ -2493,7 +2538,7 @@ function renderDayFeed(){
     d.className = "logitem" + (isTask ? " tappable" : "");
     const icon = !isTask ? ICONS.note : (closed ? ICONS.checksquare : ICONS.square);
     const icoCls = !isTask ? "note" : (closed ? "done" : "open");
-    const tsLine = fmtLogTs(e.ts) + (closed ? ` · done ${relTime(e.doneTs)}` : "");
+    const tsLine = fmtLogTs(e.ts) + byWho(e.who) + (closed ? ` · done ${relTime(e.doneTs)}${e.doneBy ? " by " + esc(e.doneBy) : ""}` : "");
     d.innerHTML = `<span class="lico ${icoCls}">${icon}</span>
       <div><div class="ltxt ${closed?"closed":""}">${esc(e.text)}</div><div class="lts">${tsLine}</div></div>`;
     if(isTask) d.onclick = ()=>toggleDayEntry(e);
@@ -2551,6 +2596,7 @@ async function loadHistory(force){
 }
 /* ---- History period model (Day / Week / Month / Year) ---- */
 let histPeriod = "day";          // day | week | month | year
+let histWho = "all";             // "all", a name, or "" for visits from before names (#16)
 let histAnchor = new Date();     // a date inside the currently shown period
 
 function visitDate(v){ return new Date(v.aT || v.lT); }
@@ -2603,7 +2649,7 @@ function visitRowHtml(v,i){
   if(v.open){ line=`${aTxt} → still on site`; cls=" open"; }
   else{ const lTxt=v.lT?fmtClock(new Date(v.lT).getTime()):"—"; line=`${aTxt} → ${lTxt} · ${fmtMins(visitMinutes(v))}`; }
   return `<div class="visitrow"><div class="vmeta"><div class="vsite">${esc(v.site||"—")}</div>
-      <div class="vtime${cls}">${dTxt} · ${line}</div></div>
+      <div class="vtime${cls}">${dTxt} · ${line}${byWho(v.who)}</div></div>
     <button class="vbtn vedit" data-vi="${i}">Edit</button>
     <button class="vbtn del vdel" data-vi="${i}">Delete</button></div>`;
 }
@@ -2612,7 +2658,11 @@ function renderHistory(events){
   const content=$("histContent");
   const allVisits=pairVisitsAll(events);
   const {start,end,label}=periodRange(histPeriod,histAnchor);
-  const inRange=allVisits.filter(v=>{ const d=visitDate(v); return d>=start && d<end; });
+  /* Who filter (#16): everyone, one person, or visits from before names existed */
+  const people = [...new Set(allVisits.map(v=>v.who||""))].sort((a,b)=> a==="" ? 1 : b==="" ? -1 : a.localeCompare(b));
+  if(histWho!=="all" && !people.includes(histWho)) histWho = "all";
+  const mine = histWho==="all" ? allVisits : allVisits.filter(v=>(v.who||"")===histWho);
+  const inRange=mine.filter(v=>{ const d=visitDate(v); return d>=start && d<end; });
   const totalMin=sumMin(inRange);
   const siteCount=new Set(inRange.map(v=>v.siteId)).size;
   const dayCount=new Set(inRange.map(v=>visitDate(v).toDateString())).size;
@@ -2635,6 +2685,12 @@ function renderHistory(events){
   }
 
   /* period selector + stepper */
+  if(people.length > 1){
+    html+=`<div class="whofilter"><label for="histWhoSel">Who</label><select id="histWhoSel">`
+      + `<option value="all">Everyone</option>`
+      + people.map(p=>`<option value="${esc(p)}"${p===histWho?" selected":""}>${p ? esc(p) : "(before names)"}</option>`).join("")
+      + `</select></div>`;
+  }
   html+=`<div class="seg" id="periodSeg">`
     + ["day","week","month","year"].map(p=>`<button data-p="${p}" class="${p===histPeriod?'on':''}">${p[0].toUpperCase()+p.slice(1)}</button>`).join("")
     + `</div>`;
@@ -2710,6 +2766,7 @@ function renderHistory(events){
 
   /* wiring */
   $("periodSeg").querySelectorAll("button").forEach(b=> b.onclick=()=>{ histPeriod=b.dataset.p; renderHistory(events); });
+  if($("histWhoSel")) $("histWhoSel").onchange = e=>{ histWho = e.target.value; renderHistory(events); };
   $("periodPrev").onclick=()=>{ stepAnchor(-1); renderHistory(events); };
   $("periodNext").onclick=()=>{ stepAnchor(1);  renderHistory(events); };
   const addBtn=$("histAddVisit");
