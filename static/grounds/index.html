@@ -1045,21 +1045,32 @@ function eventsMonthPrefix(i){ return eventsMonthKey(i) + ":"; }
    events were written there before 2026-09-22, or by editMonthDoc since) PLUS every
    per-flush batch key for that month. One /sites listing, then only the docs that
    actually exist. */
+/* Which storage key each fetched event lives in, so the visit editor can change the
+   right one (2026-10-28, #3 — since the 2026-09-22 per-flush keys, live arrive/leave
+   events are NOT in the legacy month doc, and the editor used to look only there). */
+let eventSrc = new Map();          // eventId(e) -> [key, ...]
+function eventId(e){ return `${e.type}|${e.t}|${e.siteId}`; }
 async function fetchAllEvents(n){
-  const events = [];
+  const events = [], src = new Map();
+  const take = (key, doc)=>{
+    if(!doc || !Array.isArray(doc.events)) return;
+    doc.events.forEach(e=>{ events.push(e); const id = eventId(e); (src.get(id) || src.set(id, []).get(id)).push(key); });
+  };
   let keys = [];
   try{ keys = await apiListKeys(); }catch(e){ /* listing failed — still try legacy docs below */ }
   for(let i=0;i<n;i++){
-    try{ const doc = await apiGet(eventsMonthKey(i)); if(doc && Array.isArray(doc.events)) events.push(...doc.events); }
+    try{ take(eventsMonthKey(i), await apiGet(eventsMonthKey(i))); }
     catch(e){ /* skip a missing/unreadable legacy month doc */ }
     const want = encodeURIComponent(eventsMonthPrefix(i));       // apiListKeys() returns raw (already-encoded) KV keys
     for(const raw of keys){
       if(!raw.startsWith(want)) continue;
-      try{ const doc = await apiGet(decodeURIComponent(raw));    // apiGet re-encodes, so decode first
-        if(doc && Array.isArray(doc.events)) events.push(...doc.events); }
+      const key = decodeURIComponent(raw);                       // apiGet re-encodes, so decode first
+      try{ take(key, await apiGet(key)); }
       catch(e){ /* skip an unreadable batch, don't block the rest */ }
     }
   }
+  /* merge into what's known (History fetches 15 months, the badges 2 — keep both) */
+  src.forEach((v,k)=>eventSrc.set(k, v));
   return events;
 }
 async function loadSiteTime(){
@@ -1116,7 +1127,11 @@ function populateVSite(selId){
   sel.innerHTML = sites.map(s=>`<option value="${esc(s.id)}">${esc(s.name)}</option>`).join("");
   if(selId) sel.value=selId;
 }
-function showVErr(m){ $("vErr").textContent=m; $("vErr").style.display="block"; return false; }
+function showVErr(m){
+  $("vErr").textContent=m; $("vErr").style.display="block";
+  if(!$("overlay").classList.contains("on") || $("shVisit").style.display==="none") toast(m);  // e.g. Delete on History, no sheet open
+  return false;
+}
 function updateVDur(){
   const d=$("vDate").value, a=$("vArrive").value, l=$("vLeave").value;
   if($("vOpen").checked){ $("vDur").textContent="Open visit — counts as time until you set a leave time."; return; }
@@ -1148,7 +1163,7 @@ function openEditFromVisit(v){
     arrive:v.aT?isoToLocalTime(v.aT):"", leave:v.lT?isoToLocalTime(v.lT):"" });
 }
 
-/* read-modify-write one month doc; throws if the server can't be reached (so we never clobber) */
+/* read-modify-write one event doc; throws if the server can't be reached (so we never clobber) */
 async function editMonthDoc(monthKey, mutate){
   let existing;
   try{ existing = await apiGet(monthKey); }       // throws on network failure
@@ -1158,13 +1173,36 @@ async function editMonthDoc(monthKey, mutate){
   doc.events.sort((a,b)=> (a.t||"") < (b.t||"") ? -1 : 1);
   await apiPut(monthKey, doc);                     // may throw -> propagate
 }
-async function removeOldVisitEvents(){
-  if(!editingVisit) return;
-  if(editingVisit.aT) await editMonthDoc(monthKeyOf(editingVisit.aT),
-    evs=>evs.filter(e=>!(e.type==="arrive" && e.t===editingVisit.aT)));
-  if(editingVisit.lT) await editMonthDoc(monthKeyOf(editingVisit.lT),
-    evs=>evs.filter(e=>!(e.type==="leave" && e.t===editingVisit.lT)));
+/* where the edited visit's original events are stored. If the map doesn't know them
+   (it's filled by History / the badges), reload the events for their months once. */
+async function oldVisitSources(){
+  const v = editingVisit, want = [];
+  if(v.aT) want.push(eventId({type:"arrive", t:v.aT, siteId:v.siteId}));
+  if(v.lT) want.push(eventId({type:"leave",  t:v.lT, siteId:v.siteId}));
+  if(want.some(id=>!eventSrc.has(id))){
+    const oldest = [v.aT, v.lT].filter(Boolean).sort()[0];
+    const now = new Date(), then = new Date(oldest);
+    const months = (now.getUTCFullYear()-then.getUTCFullYear())*12 + now.getUTCMonth()-then.getUTCMonth() + 1;
+    await fetchAllEvents(Math.max(1, months));
+  }
+  const missing = want.filter(id=>!eventSrc.has(id));
+  if(missing.length) throw new Error("notfound");
+  return want.map(id=>({id, keys: eventSrc.get(id)}));
 }
+/* remove the edited visit's original arrive/leave from every key that holds them */
+async function removeOldVisitEvents(sources){
+  const byKey = new Map();
+  sources.forEach(s=>s.keys.forEach(k=>(byKey.get(k) || byKey.set(k, new Set()).get(k)).add(s.id)));
+  for(const [key, ids] of byKey) await editMonthDoc(key, evs=>evs.filter(e=>!ids.has(eventId(e))));
+}
+/* write new visit events into a fresh key of their own (never rewrites anyone else's) */
+async function addVisitEvents(evs){
+  const byMonth = new Map();
+  evs.forEach(e=>(byMonth.get(monthKeyOf(e.t)) || byMonth.set(monthKeyOf(e.t), []).get(monthKeyOf(e.t))).push(e));
+  for(const [month, list] of byMonth)
+    await apiPut(month + ":" + getDeviceId() + ":" + Date.now() + "e", {events: list});
+}
+const VISIT_NOTFOUND = "Couldn’t find the original visit on the server — tap Refresh on History and try again.";
 async function ensureSyncedBeforeEdit(){
   await flushEvents();
   if(evtQueue.length){ showVErr("You have unsynced taps — open the menu, tap Sync, then try again."); return false; }
@@ -1192,11 +1230,23 @@ async function saveVisit(){
   }
   if(!(await ensureSyncedBeforeEdit())) return;
   $("vSave").disabled=true;
+  /* order matters: find the old events, write the new ones, THEN remove the old.
+     A failure part-way leaves a duplicate you can delete — never a lost visit. */
+  let step = "find";
   try{
-    await removeOldVisitEvents();
-    await editMonthDoc(monthKeyOf(arriveIso), evs=>{ evs.push({t:arriveIso,type:"arrive",siteId,site}); return evs; });
-    if(leaveIso) await editMonthDoc(monthKeyOf(leaveIso), evs=>{ evs.push({t:leaveIso,type:"leave",siteId,site,minutes}); return evs; });
-  }catch(e){ $("vSave").disabled=false; return showVErr("Couldn’t reach the server — check your signal and try again."); }
+    const sources = editingVisit ? await oldVisitSources() : [];
+    step = "write";
+    const fresh = [{t:arriveIso, type:"arrive", siteId, site}];
+    if(leaveIso) fresh.push({t:leaveIso, type:"leave", siteId, site, minutes});
+    await addVisitEvents(fresh);
+    step = "remove";
+    if(sources.length) await removeOldVisitEvents(sources);
+  }catch(e){
+    $("vSave").disabled=false;
+    if(e.message==="notfound") return showVErr(VISIT_NOTFOUND);
+    if(step==="remove"){ hideSheets(); toast("Saved, but the old copy may still show — delete it"); await afterVisitChange(); return; }
+    return showVErr("Couldn’t reach the server — check your signal and try again.");
+  }
   $("vSave").disabled=false;
   /* keep the live on-site state in sync so the badge doesn't double-count */
   const lv=getVisit();
@@ -1213,8 +1263,8 @@ async function deleteVisit(){
   if(!editingVisit) return;
   if(!confirm("Delete this visit? Its time will stop counting.")) return;
   if(!(await ensureSyncedBeforeEdit())) return;
-  try{ await removeOldVisitEvents(); }
-  catch(e){ return showVErr("Couldn’t reach the server — check your signal and try again."); }
+  try{ await removeOldVisitEvents(await oldVisitSources()); }
+  catch(e){ return showVErr(e.message==="notfound" ? VISIT_NOTFOUND : "Couldn’t reach the server — check your signal and try again."); }
   const lv=getVisit();
   if(lv && lv.siteId===editingVisit.siteId){ setVisit(null); if(cur) renderVisit(); }
   hideSheets();
