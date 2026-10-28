@@ -864,12 +864,6 @@ function onDocMerged(key, doc){
   if(cur && key==="site:"+cur.id && $("scrSite").classList.contains("active")) redrawSite();
   if($("scrList").classList.contains("active")) renderList();
 }
-async function apiListKeys(){
-  const r = await fetchT(`${API}/sites`, {}, 15000);
-  if(!r.ok) throw new Error("GET /sites "+r.status);
-  const arr = await r.json();
-  return arr.map(x=> typeof x==="string" ? x : (x.name||x.key||"")).filter(Boolean);
-}
 
 /* dirty-doc queue for offline edits */
 async function markDirty(key){
@@ -921,7 +915,11 @@ function logEvent(type, z){
   cachePut("_evtq", evtQueue);
   scheduleEvtFlush();
 }
-function scheduleEvtFlush(){ clearTimeout(evtTimer); evtTimer = setTimeout(flushEvents, 3000); }
+/* Each flush creates one storage key, so batch for 20 s (was 3 s) — about 10x fewer
+   keys (#7). Nothing waits on it: the badges update locally, and the queue is saved
+   on the device. Anything pending goes up as soon as the app is put away. */
+function scheduleEvtFlush(){ clearTimeout(evtTimer); evtTimer = setTimeout(flushEvents, 20000); }
+document.addEventListener("visibilitychange", ()=>{ if(document.visibilityState==="hidden") flushEvents(); });
 function evtPush(evt){
   evtQueue.push(evt); cachePut("_evtq", evtQueue); scheduleEvtFlush();
   /* keep the per-site time badges live (works offline — server flush catches up later) */
@@ -1055,25 +1053,21 @@ function eventsMonthPrefix(i){ return eventsMonthKey(i) + ":"; }
    events are NOT in the legacy month doc, and the editor used to look only there). */
 let eventSrc = new Map();          // eventId(e) -> [key, ...]
 function eventId(e){ return `${e.type}|${e.t}|${e.siteId}`; }
+/* One request for every month's events: the Worker's /events gathers the month doc
+   and all its batch keys server-side (2026-10-28, #7 — this used to be one request
+   per batch key, which gets slow as batches pile up). Throws if offline. */
+let eventsTruncated = false;
 async function fetchAllEvents(n){
+  const months = [];
+  for(let i=0;i<n;i++) months.push(eventsMonthKey(i).slice("_events:".length));
+  const r = await fetchT(`${API}/events?months=${months.join(",")}`, {}, 20000);
+  if(!r.ok) throw new Error("GET /events "+r.status);
+  const j = await r.json();
+  eventsTruncated = !!j.truncated;
   const events = [], src = new Map();
-  const take = (key, doc)=>{
-    if(!doc || !Array.isArray(doc.events)) return;
-    doc.events.forEach(e=>{ events.push(e); const id = eventId(e); (src.get(id) || src.set(id, []).get(id)).push(key); });
-  };
-  let keys = [];
-  try{ keys = await apiListKeys(); }catch(e){ /* listing failed — still try legacy docs below */ }
-  for(let i=0;i<n;i++){
-    try{ take(eventsMonthKey(i), await apiGet(eventsMonthKey(i))); }
-    catch(e){ /* skip a missing/unreadable legacy month doc */ }
-    const want = encodeURIComponent(eventsMonthPrefix(i));       // apiListKeys() returns raw (already-encoded) KV keys
-    for(const raw of keys){
-      if(!raw.startsWith(want)) continue;
-      const key = decodeURIComponent(raw);                       // apiGet re-encodes, so decode first
-      try{ take(key, await apiGet(key)); }
-      catch(e){ /* skip an unreadable batch, don't block the rest */ }
-    }
-  }
+  Object.values(j.months||{}).forEach(list=>list.forEach(({key, events: evs})=>{
+    (evs||[]).forEach(e=>{ events.push(e); const id = eventId(e); (src.get(id) || src.set(id, []).get(id)).push(key); });
+  }));
   /* merge into what's known (History fetches 15 months, the badges 2 — keep both) */
   src.forEach((v,k)=>eventSrc.set(k, v));
   return events;
@@ -1168,15 +1162,22 @@ function openEditFromVisit(v){
     arrive:v.aT?isoToLocalTime(v.aT):"", leave:v.lT?isoToLocalTime(v.lT):"" });
 }
 
-/* read-modify-write one event doc; throws if the server can't be reached (so we never clobber) */
+/* read-modify-write one event doc; throws if the server can't be reached (so we never
+   clobber). Version-checked (#7): the nightly compaction writes month docs too, so a
+   save based on an old copy is refused and redone from the newer one. */
 async function editMonthDoc(monthKey, mutate){
-  let existing;
-  try{ existing = await apiGet(monthKey); }       // throws on network failure
-  catch(e){ throw new Error("net"); }
-  const doc = (existing && Array.isArray(existing.events)) ? existing : {events:[]};
-  doc.events = mutate(doc.events.slice());
-  doc.events.sort((a,b)=> (a.t||"") < (b.t||"") ? -1 : 1);
-  await apiPut(monthKey, doc);                     // may throw -> propagate
+  for(let attempt=0; attempt<4; attempt++){
+    let existing;
+    try{ existing = await apiGet(monthKey); }       // throws on network failure
+    catch(e){ throw new Error("net"); }
+    const doc = (existing && Array.isArray(existing.events)) ? existing : {events:[]};
+    doc._rev = Number.isInteger(doc._rev) ? doc._rev : 0;
+    doc.events = mutate(doc.events.slice());
+    doc.events.sort((a,b)=> (a.t||"") < (b.t||"") ? -1 : 1);
+    try{ await apiPut(monthKey, doc); return; }
+    catch(e){ if(!(e instanceof ConflictError)) throw e; }   // someone else wrote it: re-read, redo
+  }
+  throw new Error("net");
 }
 /* where the edited visit's original events are stored. If the map doesn't know them
    (it's filled by History / the badges), reload the events for their months once. */
@@ -2264,7 +2265,9 @@ async function loadHistory(force){
     const events = await fetchAllEvents(15);      // ~15 months back, for month/year rollups
     events.sort((a,b)=> (a.t||"") < (b.t||"") ? -1 : 1);
     histEvents = events;
-    status.style.display = "none";
+    if(eventsTruncated){             // never silently short: say so (#7)
+      status.textContent = "⚠ Some older visits didn't load — totals may be low. Tell John; the nightly tidy-up should fix it.";
+    }else status.style.display = "none";
     renderHistory(events);
   }catch(e){
     status.textContent = "Couldn't load history — check your connection and try Refresh.";
