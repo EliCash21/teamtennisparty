@@ -93,6 +93,13 @@
   .badge.photo{background:rgba(77,159,236,.15); color:var(--accent);}
   .badge.slope{background:rgba(224,82,82,.18); color:#ff9d9d;}
   .badge.opent{background:rgba(232,163,61,.18); color:var(--flag);}
+  /* days since last done (#14): green ≤7, amber 8–14, red 15+ or not in the history */
+  .badge.age.fresh, .zage.fresh{background:rgba(63,174,90,.18); color:var(--done);}
+  .badge.age.aging, .zage.aging{background:rgba(232,163,61,.18); color:var(--flag);}
+  .badge.age.old,   .zage.old{background:rgba(224,82,82,.18); color:var(--todo);}
+  .zage{font-size:12px; font-weight:700; padding:2px 8px; border-radius:99px; flex:0 0 auto; white-space:nowrap;}
+  #sortSeg{margin-top:8px;}
+  #sortSeg button{flex:1;}
   .badge.time{display:inline-flex; flex-direction:column; align-items:flex-end; gap:1px;
     line-height:1.12; padding:4px 9px; background:rgba(77,159,236,.14); color:var(--accent);}
   .badge.time .tt{font-size:12.5px; font-weight:800; letter-spacing:.01em;}
@@ -354,7 +361,8 @@
     </header>
     <div id="progressBand"></div>
     <button id="checkBand" type="button" style="display:none;"></button>
-    <div class="searchwrap"><input id="search" type="search" placeholder="Search sites…" autocomplete="off"></div>
+    <div class="searchwrap"><input id="search" type="search" placeholder="Search sites…" autocomplete="off">
+      <div class="seg" id="sortSeg"><button data-sort="route">Route order</button><button data-sort="overdue">Most overdue</button></div></div>
     <main><div id="siteList"></div></main>
   </div>
 
@@ -974,6 +982,12 @@ function logEvent(type, z, extra){
   evtQueue.push(evt);
   cachePut("_evtq", evtQueue);
   scheduleEvtFlush();
+  /* zone taps update "days since done" straight away, offline too (#14) */
+  if(type==="status"){
+    if(!Array.isArray(stEvents)) stEvents = [];
+    stEvents.push(evt); cachePut("_sttime_events", stEvents);
+    computeSiteTime(stEvents);
+  }
   return evt;
 }
 /* Each flush creates one storage key, so batch for 20 s (was 3 s) — about 10x fewer
@@ -1075,6 +1089,7 @@ function weekStartTs(){ const n = new Date(); const x = new Date(n);
 /* pair arrive->leave into visits (same logic as renderHistory / grounds_pull.py),
    sum minutes per site for today and this week, then add any live open visit. */
 function computeSiteTime(events){
+  lastDone = lastDoneByZone(events);      // days-since-done uses the same event history (#14)
   const open = {}, visits = [];
   (events||[]).forEach(e=>{
     if(e.type==="arrive"){ open[e.siteId] = e; }
@@ -1145,7 +1160,7 @@ async function loadSiteTime(){
   if(cached){ stEvents = cached; computeSiteTime(stEvents);
     if($("scrList").classList.contains("active")) renderList(); }
   try{
-    const evs = await fetchAllEvents(2);   // prev + current month (week can span a boundary)
+    const evs = await fetchAllEvents(3);   // ~3 months: the week can span a boundary, and "days since done" (#14) looks back 90 days
     stEvents = evs; await cachePut("_sttime_events", evs);
     computeSiteTime(evs);
     if($("scrList").classList.contains("active")) renderList();
@@ -1447,6 +1462,43 @@ function refreshCounts(siteDoc){
     open: Array.isArray(siteDoc.log) ? siteDoc.log.filter(e=>e.type==="task"&&e.status==="open").length : 0 };
   meta.hasPhoto = hasAerial(siteDoc);
   meta.name = siteDoc.name;
+  meta.zoneIds = siteDoc.zones.map(z=>z.id);   // lets the site list work out "most overdue" without opening every doc (#14)
+}
+
+/* ---------------- days since each zone was last done (2026-10-28, #14) ----------------
+   From the tap history: a zone's "last done" is its latest status event marked "done".
+   An Undo correction (undo:true) cancels the tap before it, so an undone "done" doesn't
+   count. The weekly reset doesn't touch this — grass doesn't reset on Mondays. */
+const AGE_WINDOW_DAYS = 90;          // the event history loaded for the list covers ~3 months
+function lastDoneByZone(events){
+  const byZone = new Map();
+  (events||[]).filter(e=>e.type==="status" && e.zoneId)
+    .sort((a,b)=> (a.t||"") < (b.t||"") ? -1 : 1)
+    .forEach(e=>{
+      const k = e.siteId + "|" + e.zoneId;
+      if(!byZone.has(k)) byZone.set(k, []);
+      if(e.undo) byZone.get(k).pop(); else byZone.get(k).push(e);
+    });
+  const out = new Map();
+  byZone.forEach((list, k)=>{ for(let i=list.length-1; i>=0; i--) if(list[i].status==="done"){ out.set(k, list[i].t); break; } });
+  return out;
+}
+let lastDone = new Map();
+function zoneAgeDays(siteId, zoneId){
+  const t = lastDone.get(siteId + "|" + zoneId);
+  if(!t) return null;                                        // not done within the window
+  const d0 = new Date(t); d0.setHours(0,0,0,0);
+  return Math.round((dayStartTs() - d0) / 86400000);          // calendar days: today = 0
+}
+function ageClass(days){ return days==null || days>=15 ? "old" : days>=8 ? "aging" : "fresh"; }
+function ageText(days){ return days==null ? `${AGE_WINDOW_DAYS}+ d` : days===0 ? "today" : `${days}d`; }
+/* a site's most overdue zone, or null if it has no zones */
+function siteMaxAge(s){
+  const ids = Array.isArray(s.zoneIds) ? s.zoneIds : [];
+  if(!ids.length) return null;
+  let worst = -1;
+  for(const id of ids){ const d = zoneAgeDays(s.id, id); worst = Math.max(worst, d==null ? Infinity : d); }
+  return worst;
 }
 
 /* ---------------- auth ---------------- */
@@ -1507,6 +1559,9 @@ async function warmCache(){
         const open = Array.isArray(fresh.log) ? fresh.log.filter(e=>e.type==="task"&&e.status==="open").length : 0;
         if(!meta.counts) meta.counts = {total:0,done:0,flag:0};
         if((meta.counts.open||0) !== open){ meta.counts.open = open; countsChanged = true; }
+        /* and its zone list, for the "most overdue" view (#14) */
+        const ids = (fresh.zones||[]).map(z=>z.id);
+        if(!same(ids, meta.zoneIds||[])){ meta.zoneIds = ids; countsChanged = true; }
       }
     }catch(e){ break; } /* offline — stop, try again next launch */
   }
@@ -1539,9 +1594,12 @@ function siteRow(s){
     }
   }
   const openN = num(s.counts && s.counts.open);
+  const age = siteMaxAge(s);
+  const ageBadge = age==null ? "" : `<span class="badge age ${ageClass(age===Infinity?null:age)}" title="Most overdue zone: last done ${age===Infinity?"over "+AGE_WINDOW_DAYS+" days ago":ageText(age)}">⏱ ${ageText(age===Infinity?null:age)}</span>`;
   const b = document.createElement("button");
   b.className = "siterow";
   b.innerHTML = `<span class="rowmain"><span class="nm">${esc(s.name)}</span><span class="badges">`
+    + ageBadge
     + timeBadge
     + (openN?`<span class="badge opent">☐ ${openN}</span>`:"")
     + (s.slope?'<span class="badge slope">⚠ slope</span>':"")
@@ -1569,7 +1627,7 @@ function renderProgressBand(){
     </div>
     <div class="ptrack"><div class="pfill" style="width:${pct}%"></div></div>`;
 }
-/* "N visits need checking" banner — from the synced events (the last two months), so
+/* "N visits need checking" banner — from the synced events (the last ~3 months), so
    it also catches a check-in left open on another device (#11) */
 function renderCheckBand(){
   const n = visitsNeedingCheck(stEvents||[]).length, b = $("checkBand");
@@ -1577,6 +1635,14 @@ function renderCheckBand(){
   b.textContent = n ? `⚠ ${n} visit${n===1?"":"s"} need${n===1?"s":""} checking — tap to review` : "";
 }
 $("checkBand").onclick = ()=>{ openHistory(); };
+/* Route order (today's route first) or Most overdue — remembered per device (#14) */
+let listSort = (()=>{ try{ return localStorage.getItem("gt.listSort") || "route"; }catch(e){ return "route"; } })();
+function paintSortSeg(){ document.querySelectorAll("#sortSeg button").forEach(b=>b.classList.toggle("on", b.dataset.sort===listSort)); }
+document.querySelectorAll("#sortSeg button").forEach(b=> b.onclick = ()=>{
+  listSort = b.dataset.sort; try{ localStorage.setItem("gt.listSort", listSort); }catch(e){}
+  paintSortSeg(); renderList(); $("siteList").parentElement.scrollTop = 0;
+});
+paintSortSeg();
 function renderList(){
   renderProgressBand();
   renderCheckBand();
@@ -1588,6 +1654,21 @@ function renderList(){
     INDEX.sites.filter(s=>s.name.toLowerCase().includes(q))
       .sort((a,b)=>a.name.localeCompare(b.name))
       .forEach(s=>wrap.appendChild(siteRow(s)));
+    return;
+  }
+
+  if(listSort==="overdue"){ /* most overdue first (#14): sites with zones, oldest zone first */
+    const withZones = INDEX.sites.filter(s=>siteMaxAge(s)!=null)
+      .sort((a,b)=> siteMaxAge(b)-siteMaxAge(a) || a.name.localeCompare(b.name));
+    const h = document.createElement("div"); h.className = "routehead";
+    h.textContent = withZones.length ? "Most overdue first — by the zone done longest ago" : "No zones drawn yet";
+    wrap.appendChild(h);
+    withZones.forEach(s=>wrap.appendChild(siteRow(s)));
+    const none = INDEX.sites.filter(s=>siteMaxAge(s)==null).sort((a,b)=>a.name.localeCompare(b.name));
+    if(none.length){
+      const h2 = document.createElement("div"); h2.className = "routehead"; h2.textContent = "No zones yet";
+      wrap.appendChild(h2); none.forEach(s=>wrap.appendChild(siteRow(s)));
+    }
     return;
   }
 
@@ -1762,9 +1843,12 @@ function renderZoneList(){
   const cMap = {todo:"var(--todo)",done:"var(--done)",flag:"var(--flag)"};
   cur.zones.forEach(z=>{
     const d = document.createElement("div");
+    const days = zoneAgeDays(cur.id, z.id);
+    const ageTxt = days==null ? `not done in ${AGE_WINDOW_DAYS}+ d` : days===0 ? "done today" : `done ${days}d ago`;
     d.className="zonerow";
     d.innerHTML = `<span class="st" style="background:${cMap[z.status]}"></span>
       <span class="znm">${esc(z.name)}${z.notes?` <span class="ztp">— ${esc(z.notes)}</span>`:""}</span>
+      <span class="zage ${ageClass(days)}">${ageTxt}</span>
       <span class="ztp">${esc(z.type)}</span>`;
     d.onclick = ()=>openZoneSheet(z);
     wrap.appendChild(d);
@@ -1879,7 +1963,11 @@ function undoLastTap(){
   const qi = evtQueue.indexOf(u.evt);
   /* not while a sync is in flight: flushEvents trims the queue by the batch size it sent,
      so splicing now would make it drop the wrong event */
-  if(qi >= 0 && !evtFlushing){ evtQueue.splice(qi, 1); cachePut("_evtq", evtQueue); }   // never left the device
+  if(qi >= 0 && !evtFlushing){                                                          // never left the device
+    evtQueue.splice(qi, 1); cachePut("_evtq", evtQueue);
+    const si = (stEvents||[]).indexOf(u.evt);
+    if(si >= 0){ stEvents.splice(si, 1); cachePut("_sttime_events", stEvents); computeSiteTime(stEvents); }
+  }
   else logEvent("status", z, {undo: true});                                             // synced or syncing: correct it
   persistSite(); renderZones(); renderZoneList();
   toast(`${z.name} back to ${STATUS_LABEL[z.status]||z.status}`);
