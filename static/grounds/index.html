@@ -2688,6 +2688,38 @@ async function loadHistory(force){
       : "Couldn't load history — check your connection and try Refresh.";
   }
 }
+/* Export (#18): the visits on screen (period + Who filter) as a CSV that Excel/Numbers
+   open — same columns as the Monday report's Visits sheet. On a phone/iPad it opens
+   the share sheet (Save to Files, Mail, AirDrop); elsewhere it downloads. */
+function csvCell(x){ const t = String(x ?? ""); return /[",\n]/.test(t) ? `"${t.replace(/"/g,'""')}"` : t; }
+async function exportVisits(visits, start, label){
+  if(!visits.length){ toast(`No visits in this ${histPeriod} to export`); return; }
+  const routeOf = id => { const m = INDEX.sites.find(s=>s.id===id); return (m && m.route) || ""; };
+  const rows = [["Date","Day","Route","Site","Who","Arrive","Leave","Minutes","Hours","Note"]];
+  visits.slice().sort((a,b)=>visitDate(a)-visitDate(b)).forEach(v=>{
+    const d = visitDate(v), min = visitMinutes(v), issue = visitIssue(v);
+    rows.push([isoToLocalDate(d.toISOString()), d.toLocaleDateString("en-CA",{weekday:"short"}), routeOf(v.siteId),
+      v.site||"", v.who || "(before names)", v.aT ? isoToLocalTime(v.aT) : "", v.open ? "" : (v.lT ? isoToLocalTime(v.lT) : ""),
+      min, (min/60).toFixed(2), v.open ? "still on site" : (issue ? "needs checking: "+issue : "")]);
+  });
+  const total = visits.reduce((n,v)=>n+visitMinutes(v),0);
+  rows.push([]); rows.push(["Total","","","","","","",total,(total/60).toFixed(2),""]);
+  const csv = "\ufeff" + rows.map(r=>r.map(csvCell).join(",")).join("\r\n") + "\r\n";   // BOM so Excel reads accents (École)
+  const ymd = isoToLocalDate(start.toISOString());
+  const stamp = histPeriod==="year" ? ymd.slice(0,4) : histPeriod==="month" ? ymd.slice(0,7) : histPeriod==="week" ? "week-of-"+ymd : ymd;
+  const who = histWho==="all" ? "" : "-" + (histWho || "before-names").replace(/[^A-Za-z0-9]+/g,"-");
+  const name = `grounds-visits-${stamp}${who}.csv`;
+  const file = new File([csv], name, {type:"text/csv"});
+  const touch = matchMedia("(pointer:coarse)").matches;
+  if(touch && navigator.canShare && navigator.canShare({files:[file]})){
+    try{ await navigator.share({files:[file], title:`Grounds visits — ${label}`}); return; }
+    catch(e){ if(e && e.name==="AbortError") return; }       // cancelled; anything else falls back to a download
+  }
+  const url = URL.createObjectURL(file), a = document.createElement("a");
+  a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url), 10000);
+  toast(`Exported ${visits.length} visit${visits.length===1?"":"s"} — ${name}`);
+}
 /* ---- History period model (Day / Week / Month / Year) ---- */
 let histPeriod = "day";          // day | week | month | year
 let histWho = "all";             // "all", a name, or "" for visits from before names (#16)
@@ -2799,6 +2831,8 @@ function renderHistory(events){
       ${histPeriod!=="day"?`<div class="statcard"><div class="num">${dayCount}</div><div class="lbl">Days worked</div></div>`:""}
     </div>`;
 
+  html+=`<div class="histsection" style="padding-bottom:0;"><button class="addvisit" id="histExport" style="margin-bottom:0;">⤓ Export this ${histPeriod} (spreadsheet)</button></div>`;
+
   /* minutes by site — for every period (this is the paperwork unit) */
   const bySite={};
   inRange.forEach(v=>{ (bySite[v.siteId] ??= {site:v.site, min:0}).min += visitMinutes(v); });
@@ -2861,6 +2895,7 @@ function renderHistory(events){
   /* wiring */
   $("periodSeg").querySelectorAll("button").forEach(b=> b.onclick=()=>{ histPeriod=b.dataset.p; renderHistory(events); });
   if($("histWhoSel")) $("histWhoSel").onchange = e=>{ histWho = e.target.value; renderHistory(events); };
+  $("histExport").onclick=()=>exportVisits(inRange, start, label);
   $("periodPrev").onclick=()=>{ stepAnchor(-1); renderHistory(events); };
   $("periodNext").onclick=()=>{ stepAnchor(1);  renderHistory(events); };
   const addBtn=$("histAddVisit");
