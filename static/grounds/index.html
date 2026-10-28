@@ -564,7 +564,15 @@ function toast(msg){
   const t = $("toast"); t.textContent = msg; t.classList.add("on");
   clearTimeout(t._tm); t._tm = setTimeout(()=>t.classList.remove("on"), 1800);
 }
-function esc(s){ return String(s).replace(/[&<>"]/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+function esc(s){ return String(s).replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+/* stored data is never trusted as markup (2026-10-28): counts are forced to numbers,
+   and anything used as an image/file URL must be a plain base64 data: URL */
+function num(n){ n = Number(n); return Number.isFinite(n) ? n : 0; }
+function safeDataUrl(s, imageOnly){
+  const re = imageOnly ? /^data:image\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]+$/i
+                       : /^data:[a-z0-9.+-]+\/[a-z0-9.+-]+(;[a-z0-9=.+-]+)*;base64,[A-Za-z0-9+/=]+$/i;
+  return (typeof s==="string" && re.test(s)) ? s : "";
+}
 function setPill(state, label){
   const p = $("syncPill"); p.className = state; p.textContent = label;
 }
@@ -697,10 +705,29 @@ async function cacheGet(key){
 }
 
 /* ---------------- API (all calls time out fast on weak signal) ---------------- */
+/* 2026-10-28: every data call carries the token the Worker issued at sign-in.
+   A 401 means the token was rejected (e.g. everyone was signed out on purpose):
+   send the user back to the login screen. Nothing local is lost — unsynced edits
+   stay in the dirty/event queues and go up after the next sign-in. */
+function getToken(){ return localStorage.getItem("gt.token"); }
 function fetchT(url, opts={}, ms=6000){
   const ctl = new AbortController();
   const tm = setTimeout(()=>ctl.abort(), ms);
-  return fetch(url, {...opts, signal:ctl.signal}).finally(()=>clearTimeout(tm));
+  const headers = {...(opts.headers||{})};
+  const tok = getToken();
+  if(tok) headers.Authorization = "Bearer " + tok;
+  return fetch(url, {...opts, headers, signal:ctl.signal}).then(r=>{
+    if(r.status===401 && !url.endsWith("/auth")) signedOut();
+    return r;
+  }).finally(()=>clearTimeout(tm));
+}
+function signedOut(){
+  localStorage.removeItem("gt.token");
+  if($("scrLogin").classList.contains("active")) return;
+  document.querySelectorAll(".screen").forEach(s=>s.classList.remove("active"));
+  hideSheets();
+  $("scrLogin").classList.add("active");
+  $("loginErr").textContent = "Please sign in again — your edits are saved on this device.";
 }
 async function apiGet(key){
   const r = await fetchT(`${API}/site/${encodeURIComponent(key)}`);
@@ -966,7 +993,7 @@ function monthKeyOf(iso){ return "_events:" + iso.slice(0,7); }
 function populateVSite(selId){
   const sel=$("vSite");
   const sites=[...INDEX.sites].sort((a,b)=>a.name.localeCompare(b.name));
-  sel.innerHTML = sites.map(s=>`<option value="${s.id}">${esc(s.name)}</option>`).join("");
+  sel.innerHTML = sites.map(s=>`<option value="${esc(s.id)}">${esc(s.name)}</option>`).join("");
   if(selId) sel.value=selId;
 }
 function showVErr(m){ $("vErr").textContent=m; $("vErr").style.display="block"; return false; }
@@ -1132,24 +1159,28 @@ function refreshCounts(siteDoc){
 }
 
 /* ---------------- auth ---------------- */
+/* returns the token on success, null on a wrong password; throws if offline */
 async function tryLogin(pw){
-  const r = await fetch(`${API}/auth`,{method:"POST",headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({password:pw})});
-  return r.ok;
+  const r = await fetchT(`${API}/auth`,{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({password:pw})}, 10000);
+  if(!r.ok) return null;
+  const j = await r.json().catch(()=>({}));
+  return (j && typeof j.token==="string") ? j.token : null;
 }
 $("btnLogin").onclick = async ()=>{
   const pw = $("pw").value;
   $("loginErr").textContent = "";
   $("btnLogin").disabled = true;
   try{
-    if(await tryLogin(pw)){
-      localStorage.setItem("gt.auth","1");
+    const tok = await tryLogin(pw);
+    if(tok){
+      localStorage.setItem("gt.token", tok);
+      localStorage.removeItem("gt.auth");            // pre-2026-10-28 flag, no longer used
+      $("pw").value = "";
       await enterApp();
     }else $("loginErr").textContent = "Wrong password.";
   }catch(e){
-    /* offline but previously authed? allow cached entry */
-    if(localStorage.getItem("gt.auth")==="1"){ await enterApp(); }
-    else $("loginErr").textContent = "Can't reach the server.";
+    $("loginErr").textContent = "Can't reach the server — sign-in needs signal once per device.";
   }
   $("btnLogin").disabled = false;
 };
@@ -1157,6 +1188,7 @@ $("pw").addEventListener("keydown",e=>{ if(e.key==="Enter") $("btnLogin").click(
 
 async function enterApp(){
   await loadIndex();
+  if(!getToken()) return;              // token rejected while loading — signedOut() showed the login screen
   $("scrLogin").classList.remove("active");
   $("scrList").classList.add("active");
   renderList();
@@ -1195,7 +1227,7 @@ const DAY_NAMES = {1:"Monday",2:"Tuesday",3:"Wednesday",4:"Thursday",5:"Friday"}
 function todayRoute(){ const d = new Date().getDay(); return (d>=1 && d<=5) ? d : null; }
 
 function siteRow(s){
-  const {total,done,flag} = s.counts||{total:0,done:0,flag:0};
+  const c = s.counts||{}, total = num(c.total), done = num(c.done), flag = num(c.flag);
   let badge;
   if(total===0) badge = `<span class="badge none">no zones</span>`;
   else if(done===total) badge = `<span class="badge alldone">✓ ${done}/${total}</span>`;
@@ -1212,7 +1244,7 @@ function siteRow(s){
       timeBadge = `<span class="badge time wkonly"><span class="tt">wk ${fmtMins(st.week)}</span></span>`;
     }
   }
-  const openN = (s.counts && s.counts.open) || 0;
+  const openN = num(s.counts && s.counts.open);
   const b = document.createElement("button");
   b.className = "siterow";
   b.innerHTML = `<span class="nm">${esc(s.name)}</span>`
@@ -1234,7 +1266,7 @@ function renderProgressBand(){
   const sites = today ? INDEX.sites.filter(s=>s.route===today) : [];
   if(!today || !sites.length){ band.classList.remove("show"); band.innerHTML=""; return; }
   let total=0, done=0, flag=0;
-  sites.forEach(s=>{ const c=s.counts||{total:0,done:0,flag:0}; total+=c.total; done+=c.done; flag+=c.flag; });
+  sites.forEach(s=>{ const c=s.counts||{}; total+=num(c.total); done+=num(c.done); flag+=num(c.flag); });
   const pct = total ? Math.round(done/total*100) : 0;
   band.classList.add("show");
   band.innerHTML = `<div class="ptop">
@@ -1565,7 +1597,7 @@ $("btnMenu").onclick = ()=>{
 };
 $("mClose").onclick = hideSheets;
 $("mSync").onclick = async ()=>{ hideSheets(); await flushDirty(); await flushEvents(); await loadIndex(); renderList(); toast("Synced"); };
-$("mLogout").onclick = ()=>{ localStorage.removeItem("gt.auth"); location.reload(); };
+$("mLogout").onclick = ()=>{ localStorage.removeItem("gt.token"); localStorage.removeItem("gt.auth"); location.reload(); };
 $("mNewWeek").onclick = async ()=>{
   if(!confirm("Log this week and reset all zone statuses to To do?")) return;
   hideSheets(); setPill("busy","resetting…");
@@ -1731,8 +1763,9 @@ function renderAttachments(){
     const tile = document.createElement("div");
     tile.className = "atttile";
     const noteHtml = a.note ? '<span class="note">'+esc(a.note)+'</span>' : '';
-    if(a.kind==="photo" && a.thumb){
-      tile.innerHTML = '<img class="thumb" src="'+a.thumb+'" alt="">'
+    const thumb = a.kind==="photo" ? safeDataUrl(a.thumb, true) : "";
+    if(thumb){
+      tile.innerHTML = '<img class="thumb" src="'+thumb+'" alt="">'
         + '<div class="cap">'+noteHtml+'<span class="when">'+fmtWhen(a.ts)+'</span></div>';
     }else{
       tile.innerHTML = '<div class="docthumb">📄<span class="ext">'+esc(fileExt(a.name))+'</span></div>'
@@ -1782,14 +1815,16 @@ async function openAttachment(id){
   let blob = await cacheGet(attKey(id));
   if(!blob){ try{ blob = await apiGet(attKey(id)); if(blob) cachePut(attKey(id), blob); }catch(e){} }
   if(!blob || !blob.data){ view.innerHTML = '<p class="hint" style="padding:2px;">File not available offline. Reopen when you have signal.</p>'; return; }
+  const data = safeDataUrl(blob.data, meta.kind==="photo");
+  if(!data){ view.innerHTML = '<p class="hint" style="padding:2px;">This file looks damaged and can\'t be shown.</p>'; return; }
   if(meta.kind==="photo"){
-    view.innerHTML = '<img alt="" src="'+blob.data+'">';
+    view.innerHTML = '<img alt="" src="'+data+'">';
   }else{
     view.innerHTML = '<div class="docopen"><div class="big">📄</div><div>'+esc(meta.name||"file")+'</div>'
       + '<button class="hbtn primary" id="attOpenBtn">Open file</button></div>';
     $("attOpenBtn").onclick = ()=>{
       const w = window.open();
-      if(w) w.document.write('<iframe src="'+blob.data+'" style="border:0;width:100%;height:100%;position:absolute;inset:0"></iframe>');
+      if(w) w.document.write('<iframe src="'+data+'" style="border:0;width:100%;height:100%;position:absolute;inset:0"></iframe>');
       else toast("Allow pop-ups to open the file");
     };
   }
@@ -1832,12 +1867,12 @@ let DAY = null;              // _daynotes doc
 let dayType = "note";
 let openAllRows = [];        // [{siteId?, siteName, doc?, entry, general?}]
 
-function dayOpenCount(){
+function dayOpenCount(){ /* always a real number: filter().length */
   return (DAY && Array.isArray(DAY.log)) ? DAY.log.filter(e=>e.type==="task"&&e.status==="open").length : 0;
 }
 function openTaskTotal(){
   let n = dayOpenCount();
-  if(INDEX) INDEX.sites.forEach(s=>{ n += (s.counts && s.counts.open) || 0; });
+  if(INDEX) INDEX.sites.forEach(s=>{ n += num(s.counts && s.counts.open); });
   return n;
 }
 function renderOpenBtn(){
@@ -2194,8 +2229,8 @@ if("serviceWorker" in navigator){
   navigator.serviceWorker.register("/grounds/sw.js").catch(()=>{});
 }
 
-/* auto-login if previously authed */
-if(localStorage.getItem("gt.auth")==="1"){ enterApp(); }
+/* auto-login if this device already has a token (works offline too) */
+if(getToken()){ enterApp(); }
 </script>
 </body>
 </html>
