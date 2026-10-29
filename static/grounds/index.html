@@ -157,6 +157,18 @@
   #drawbar .msg{flex:1 1 160px; font-size:14px; color:var(--text);}
   #drawbar .hbtn.on{background:var(--accent); border-color:var(--accent); color:#fff;}
   #drawbar .hbtn.exclude.on{background:#c0392b; border-color:#c0392b;}
+  #editbar{display:none; gap:8px; padding:8px 10px; background:#2b3850; align-items:center; flex-wrap:wrap;}
+  #editbar.on{display:flex;}
+  #editbar .msg{flex:1 1 160px; font-size:14px; color:var(--text);}
+  #editbar .hbtn:disabled{opacity:.4;}
+  #zonesSvg polygon.editing{fill:rgba(77,159,236,.22); stroke:#9ed0ff; stroke-width:2.5; pointer-events:none;}
+  #zonesSvg circle.hhit{fill:transparent; stroke:none; pointer-events:all; cursor:grab;}
+  #zonesSvg circle.hvis{fill:#fff; stroke:var(--accent); stroke-width:2.5; vector-effect:non-scaling-stroke; pointer-events:none;}
+  #zonesSvg circle.hvis.sel{fill:var(--accent); stroke:#fff;}
+  #zonesSvg circle.mvis{fill:rgba(255,255,255,.5); stroke:var(--accent); stroke-width:1.5; vector-effect:non-scaling-stroke; pointer-events:none;}
+  #loupe{position:fixed; width:120px; height:120px; border-radius:50%; overflow:hidden; border:3px solid #fff;
+    box-shadow:0 4px 14px rgba(0,0,0,.5); pointer-events:none; display:none; z-index:60; background:#000;}
+  #loupe svg{width:100%; height:100%; display:block;}
   #zonesSvg circle.sgin{fill:#3fae5a; stroke:#fff; stroke-width:2; vector-effect:non-scaling-stroke;}
   #zonesSvg circle.sgex{fill:#e05252; stroke:#fff; stroke-width:2; vector-effect:non-scaling-stroke;}
 
@@ -441,9 +453,17 @@
       <div class="msg" id="drawMsg">Tap the photo to add corner points.</div>
       <button class="hbtn" id="btnSuggest">✨ Suggest</button>
       <button class="hbtn exclude" id="btnExclude" style="display:none;">Exclude</button>
+      <button class="hbtn" id="btnRect">▭ Rectangle</button>
       <button class="hbtn" id="btnUndoPt">Undo</button>
       <button class="hbtn" id="btnCancelDraw">Cancel</button>
       <button class="hbtn primary" id="btnFinishZone">Finish</button>
+    </div>
+    <div id="editbar">
+      <div class="msg" id="editMsg">Tap a zone to change its shape.</div>
+      <button class="hbtn" id="btnZoneDetails" style="display:none;">Details</button>
+      <button class="hbtn" id="btnDelCorner" style="display:none;">Delete corner</button>
+      <button class="hbtn" id="btnShapeCancel" style="display:none;">Cancel</button>
+      <button class="hbtn primary" id="btnShapeSave" style="display:none;">Save</button>
     </div>
 
     <main id="siteMain">
@@ -468,7 +488,7 @@
         <span><span class="dot" style="background:var(--flag)"></span>Needs attention</span>
         <span id="propArea" style="display:none;"></span>
       </div>
-      <div class="hint">Track: tap a zone to cycle its status. Edit: tap a zone to rename, change type, add notes, or delete.</div>
+      <div class="hint">Track: tap a zone to cycle its status. Edit: tap a zone to drag its corners (tap a small dot on an edge to add one); Details to rename, change type, add notes, or delete.</div>
       <div class="section" id="attachSection">
         <h3>Photos &amp; files</h3>
         <div class="attadd">
@@ -515,6 +535,7 @@
 </div>
 
 <!-- ============ MODALS ============ -->
+<div id="loupe"></div>
 <div id="overlay">
   <div class="sheet" id="shZone" style="display:none;">
     <h2 id="zoneSheetTitle">Zone</h2>
@@ -1894,6 +1915,8 @@ function persistSite(){
   saveIndexDebounced();
 }
 function backToList(){
+  if(shapeDirty() && !confirm("Discard the changes to this zone's shape?")) return;
+  shapeEdit = null; cancelShapeDrag(); hideLoupe();
   hideUndo();
   if(cur){ cur.notes = $("siteNotes").value; persistSite(); }
   cur = null; drawPts=[];
@@ -1955,13 +1978,17 @@ function renderZones(){
   });
 
   cur.zones.forEach(z=>{
-    const ptStr = z.points.map(p=>`${p[0]*W},${p[1]*H}`).join(" ");
+    const editing = shapeEdit && shapeEdit.zone.id===z.id;
+    const pts = editing ? shapeEdit.pts : z.points;
+    const ptStr = pts.map(p=>`${p[0]*W},${p[1]*H}`).join(" ");
     const poly = document.createElementNS("http://www.w3.org/2000/svg","polygon");
     poly.setAttribute("points",ptStr);
-    poly.setAttribute("class",z.status);
+    poly.setAttribute("class", editing ? "editing" : z.status);
+    if(editing) shapeEdit.els = {poly};
     poly.addEventListener("click",ev=>{ if(mode==="draw") return;          // drawing: let the tap reach the photo
       ev.stopPropagation(); zoneTapped(z); });
     svg.appendChild(poly);
+    if(editing) return;                                     // no label while its corners are showing
     const [cx,cy] = centroid(z.points);
     const txt = document.createElementNS("http://www.w3.org/2000/svg","text");
     txt.setAttribute("x",cx*W); txt.setAttribute("y",cy*H);
@@ -1969,6 +1996,8 @@ function renderZones(){
     txt.textContent = `${TYPE_ABBR[z.type]||"•"} ${z.name}`;
     svg.appendChild(txt);
   });
+
+  if(mode==="edit" && shapeEdit && shapeEdit.els) addShapeHandles(svg, W, H);
 
   if(mode==="draw" && drawPts.length){
     const ptStr = drawPts.map(p=>`${p[0]*W},${p[1]*H}`).join(" ");
@@ -2101,7 +2130,8 @@ function zoneTapped(z){
     persistSite(); renderZones(); renderZoneList();
     offerUndo(z, prev, evt);
   }else if(mode==="edit"){
-    openZoneSheet(z);
+    if(Date.now() - shapeDragEndedAt < 400) return;          // the click that ends a corner drag
+    startShapeEdit(z);
   }
 }
 /* ---- undo the last zone tap (2026-10-28, #13) ----
@@ -2144,6 +2174,7 @@ $("zonesSvg").addEventListener("click",ev=>{
   const r = svg.getBoundingClientRect();
   const x = (ev.clientX - r.left)/r.width, y = (ev.clientY - r.top)/r.height;
   if(x<0||x>1||y<0||y>1) return;
+  if(rectOn){ rectTap(x, y); return; }
   if(suggestOn){ suggestTap(x, y); return; }
   drawPts.push([x,y]);
   drawMsgCount();
@@ -2157,16 +2188,22 @@ function drawMsgCount(){
 
 function setMode(m){
   if(m==="draw" && cur && !hasAerial(cur)){ toast("Add an aerial photo first"); m = "track"; }
+  if(shapeEdit && m!=="edit"){
+    if(shapeDirty() && !confirm("Discard the changes to this zone's shape?")) return;
+    shapeEdit = null; cancelShapeDrag(); hideLoupe();
+  }
   mode = m;
   document.querySelectorAll("#modeSeg button").forEach(b=>b.classList.toggle("on",b.dataset.mode===m));
   $("drawbar").classList.toggle("on", m==="draw");
-  if(m!=="draw"){ drawPts=[]; suggestOn = false; sam.pts = []; }
+  $("editbar").classList.toggle("on", m==="edit");
+  if(m!=="draw"){ drawPts=[]; suggestOn = false; sam.pts = []; rectOn = false; }
   if(m==="draw") $("drawMsg").textContent = "Tap the photo to add corner points.";
-  paintSuggest();
+  paintSuggest(); paintRect(); paintEditBar();
   renderZones();
 }
 document.querySelectorAll("#modeSeg button").forEach(b=>b.onclick=()=>setMode(b.dataset.mode));
 $("btnUndoPt").onclick = ()=>{
+  if(rectOn){ drawPts = []; $("drawMsg").textContent = "Tap one corner, then the opposite corner."; renderZones(); return; }
   if(suggestOn && sam.pts.length){                      // undo the last Suggest tap
     if(sam.busy) return;
     sam.pts.pop();
@@ -2330,7 +2367,7 @@ $("btnSuggest").onclick = async ()=>{
     $("drawMsg").textContent = drawPts.length ? `${drawPts.length} points — tap to add more, or Finish.` : "Tap the photo to add corner points.";
     return; }
   if(sam.state === "loading") return;
-  suggestOn = true; suggestLabel = 1; sam.pts = [];
+  suggestOn = true; suggestLabel = 1; sam.pts = []; rectOn = false; paintRect();
   $("drawMsg").textContent = "Loading the outline helper (first time only)…";
   try{ await samStart(); }catch(e){ $("drawMsg").textContent = "Suggest isn't available right now — tap corners instead."; return; }
   if(!suggestOn || mode!=="draw") return;
@@ -2372,8 +2409,180 @@ $("btnFinishZone").onclick = ()=>{
   openZoneSheet(null);
 };
 
+/* ---------------- rectangle (zone upgrade Phase 3, 2026-10-28) ----------------
+   Draw mode ▭ Rectangle: tap one corner, then the opposite corner → a 4-corner zone
+   lined up with the photo (city photos are north-up). Tapping again starts a new one. */
+let rectOn = false;
+function paintRect(){ $("btnRect").classList.toggle("on", rectOn); }
+$("btnRect").onclick = ()=>{
+  rectOn = !rectOn;
+  if(rectOn && suggestOn){ suggestOn = false; sam.pts = []; paintSuggest(); }
+  paintRect();
+  $("drawMsg").textContent = rectOn ? "Tap one corner, then the opposite corner." : "Tap the photo to add corner points.";
+  renderZones();
+};
+function rectTap(x, y){
+  if(drawPts.length===1){
+    const [a, b] = drawPts[0];
+    if(Math.abs(x-a)<0.003 || Math.abs(y-b)<0.003){ toast("Too thin — tap further from the first corner"); return; }
+    drawPts = [[a,b],[x,b],[x,y],[a,y]];
+    drawMsgCount();
+  }else{
+    drawPts = [[x,y]];
+    $("drawMsg").textContent = "Now tap the opposite corner.";
+  }
+  renderZones();
+}
+
+/* ---------------- shape editing (zone upgrade Phase 3, 2026-10-28) ----------------
+   Edit mode: tap a zone to show its corners. Drag a corner to move it; tap the small dot
+   in the middle of an edge to add a corner there (and keep dragging to place it); tap a
+   corner, then Delete corner (never fewer than 3). Save writes the points through the
+   normal save/merge path; Cancel puts them back; Details opens the usual zone sheet.
+   Handles are drawn at a fixed screen size (44 px touch target) at any zoom, and are
+   redrawn when the zoom changes. A second finger cancels the drag and pinch-zooms instead.
+   While dragging by touch, a loupe above the finger shows the corner 3x magnified.
+   Track mode is untouched. */
+let shapeEdit = null;            // {zone, pts, sel, els}
+let shapeDrag = null;            // {i, id, dx, dy, start, touch}
+let shapeDragEndedAt = 0;
+const HANDLE_HIT_PX = 22, HANDLE_PX = 8, MID_PX = 6;
+
+function shapeDirty(){ return !!shapeEdit && !same(shapeEdit.pts, shapeEdit.zone.points); }
+function startShapeEdit(z){
+  if(shapeEdit && shapeEdit.zone.id===z.id) return;
+  if(shapeDirty() && !confirm("Discard the changes to this zone's shape?")) return;
+  shapeEdit = {zone:z, pts:clone(z.points), sel:null, els:null};
+  paintEditBar(); renderZones();
+}
+function endShapeEdit(){ cancelShapeDrag(); shapeEdit = null; hideLoupe(); paintEditBar(); renderZones(); }
+function paintEditBar(){
+  const on = !!shapeEdit;
+  ["btnZoneDetails","btnDelCorner","btnShapeCancel","btnShapeSave"].forEach(id=>$(id).style.display = on ? "" : "none");
+  if(!on){ $("editMsg").textContent = "Tap a zone to change its shape."; return; }
+  $("btnDelCorner").disabled = shapeEdit.sel==null || shapeEdit.pts.length<=3;
+  paintEditMsg();
+}
+function paintEditMsg(){
+  const a = geoArea(siteGeo(cur), shapeEdit.pts);
+  $("editMsg").textContent = `${shapeEdit.zone.name}: ${shapeEdit.pts.length} corners` +
+    (a!=null ? ` — ${fmtArea(a)}` : "") + (shapeDirty() ? " · not saved" : "");
+}
+function addShapeHandles(svg, W, H){
+  const rw = svg.getBoundingClientRect().width, k = rw ? W/rw : 1;            // SVG units per screen pixel
+  const P = shapeEdit.pts, n = P.length, els = shapeEdit.els, NS = "http://www.w3.org/2000/svg";
+  const circle = (x,y,r,cls)=>{ const c = document.createElementNS(NS,"circle");
+    c.setAttribute("cx",x); c.setAttribute("cy",y); c.setAttribute("r",r); c.setAttribute("class",cls); svg.appendChild(c); return c; };
+  els.corners = []; els.mids = [];
+  for(let i=0;i<n;i++){                                     // edge midpoints first, so corners win where they overlap
+    const a = P[i], b = P[(i+1)%n], mx = (a[0]+b[0])/2, my = (a[1]+b[1])/2;
+    const vis = circle(mx*W, my*H, MID_PX*k, "mvis"), hit = circle(mx*W, my*H, HANDLE_HIT_PX*k, "hhit");
+    hit.addEventListener("pointerdown", ev=>{
+      shapeEdit.pts.splice(i+1, 0, [mx, my]); shapeEdit.sel = i+1;
+      beginShapeDrag(ev, i+1);
+      requestAnimationFrame(()=>{ renderZones(); paintEditBar(); });   // not now: the touched element must outlive touchstart
+    });
+    els.mids.push({vis, hit});
+  }
+  P.forEach((p,i)=>{
+    const vis = circle(p[0]*W, p[1]*H, HANDLE_PX*k, "hvis" + (shapeEdit.sel===i ? " sel" : ""));
+    const hit = circle(p[0]*W, p[1]*H, HANDLE_HIT_PX*k, "hhit");
+    hit.addEventListener("pointerdown", ev=>{
+      const f = svgFrac(ev), sx = W/H;                       // where handles overlap, take the corner nearest the finger
+      let best = i, bd = Infinity;
+      P.forEach((q,j)=>{ const d = ((q[0]-f[0])*sx)**2 + (q[1]-f[1])**2; if(d<bd){ bd = d; best = j; } });
+      shapeEdit.sel = best; els.corners.forEach((c,j)=>c.vis.classList.toggle("sel", j===best));
+      paintEditBar(); beginShapeDrag(ev, best);
+    });
+    els.corners.push({vis, hit});
+  });
+}
+function svgFrac(ev){ const r = $("zonesSvg").getBoundingClientRect(); return [(ev.clientX-r.left)/r.width, (ev.clientY-r.top)/r.height]; }
+function beginShapeDrag(ev, i){
+  ev.preventDefault(); ev.stopPropagation();
+  try{ $("zonesSvg").setPointerCapture(ev.pointerId); }catch(e){}
+  const f = svgFrac(ev), p = shapeEdit.pts[i];
+  shapeDrag = {i, id:ev.pointerId, dx:p[0]-f[0], dy:p[1]-f[1], start:p.slice(), touch: ev.pointerType!=="mouse"};
+  if(shapeDrag.touch) showLoupe(ev);
+}
+function moveHandles(i){
+  const {W,H} = svgDims(), P = shapeEdit.pts, n = P.length, els = shapeEdit.els;
+  els.poly.setAttribute("points", P.map(p=>`${p[0]*W},${p[1]*H}`).join(" "));
+  if(!els.corners || els.corners.length!==n) return;       // a corner was just added; the redraw is on its way
+  const put = (o,x,y)=>{ o.vis.setAttribute("cx",x); o.vis.setAttribute("cy",y); o.hit.setAttribute("cx",x); o.hit.setAttribute("cy",y); };
+  put(els.corners[i], P[i][0]*W, P[i][1]*H);
+  [(i-1+n)%n, i].forEach(j=>{ const a = P[j], b = P[(j+1)%n]; put(els.mids[j], (a[0]+b[0])/2*W, (a[1]+b[1])/2*H); });
+}
+function cancelShapeDrag(){
+  if(!shapeDrag) return;
+  if(shapeEdit) shapeEdit.pts[shapeDrag.i] = shapeDrag.start;
+  shapeDrag = null; hideLoupe();
+  if(shapeEdit){ renderZones(); paintEditBar(); }
+}
+(function(){
+  const svg = $("zonesSvg");
+  /* one finger on a handle drags it rather than scrolling the page (a second finger still zooms) */
+  svg.addEventListener("touchstart", e=>{
+    if(e.touches.length===1 && e.target.classList && e.target.classList.contains("hhit")) e.preventDefault();
+  }, {passive:false});
+  svg.addEventListener("pointermove", ev=>{
+    if(!shapeDrag || ev.pointerId!==shapeDrag.id || !shapeEdit) return;
+    ev.preventDefault();
+    const f = svgFrac(ev), i = shapeDrag.i;
+    shapeEdit.pts[i] = [Math.min(1, Math.max(0, f[0]+shapeDrag.dx)), Math.min(1, Math.max(0, f[1]+shapeDrag.dy))];
+    moveHandles(i); paintEditMsg();
+    if(shapeDrag.touch) showLoupe(ev);
+  });
+  const end = ev=>{
+    if(!shapeDrag || ev.pointerId!==shapeDrag.id) return;
+    if(ev.type==="pointercancel"){ cancelShapeDrag(); return; }
+    shapeDrag = null; shapeDragEndedAt = Date.now(); hideLoupe();
+    renderZones(); paintEditBar();
+  };
+  svg.addEventListener("pointerup", end);
+  svg.addEventListener("pointercancel", end);
+  window.addEventListener("resize", ()=>{ if(shapeEdit && !shapeDrag) renderZones(); });
+})();
+/* the loupe: a 120 px circle above the finger showing the corner at 3x, with a crosshair */
+function showLoupe(ev){
+  const L = $("loupe"), img = $("sitePhoto"), {W,H} = svgDims(), r = $("zonesSvg").getBoundingClientRect();
+  const NS = "http://www.w3.org/2000/svg", size = 120, win = size / (r.width/W * 3);
+  if(!L.firstChild){
+    L.innerHTML = `<svg xmlns="${NS}"><image preserveAspectRatio="none"/><polygon fill="rgba(77,159,236,.22)" stroke="#9ed0ff"
+      stroke-width="2" vector-effect="non-scaling-stroke"/><line stroke="#fff" stroke-width="1.5" vector-effect="non-scaling-stroke"/>
+      <line stroke="#fff" stroke-width="1.5" vector-effect="non-scaling-stroke"/></svg>`;
+  }
+  const s = L.firstChild, im = s.querySelector("image"), [lh, lv] = s.querySelectorAll("line");
+  if(im.getAttribute("href") !== img.src){ im.setAttribute("href", img.src); im.setAttribute("width", W); im.setAttribute("height", H); }
+  const p = shapeEdit.pts[shapeDrag.i], cx = p[0]*W, cy = p[1]*H;
+  s.setAttribute("viewBox", `${cx-win/2} ${cy-win/2} ${win} ${win}`);
+  s.querySelector("polygon").setAttribute("points", shapeEdit.pts.map(q=>`${q[0]*W},${q[1]*H}`).join(" "));
+  lh.setAttribute("x1", cx-win/5); lh.setAttribute("x2", cx+win/5); lh.setAttribute("y1", cy); lh.setAttribute("y2", cy);
+  lv.setAttribute("y1", cy-win/5); lv.setAttribute("y2", cy+win/5); lv.setAttribute("x1", cx); lv.setAttribute("x2", cx);
+  let top = ev.clientY - size - 70;                           // well above the finger
+  if(top < 8) top = ev.clientY + 50;                          // no room above: show it below
+  L.style.left = Math.max(8, Math.min(innerWidth - size - 8, ev.clientX - size/2)) + "px";
+  L.style.top = top + "px";
+  L.style.display = "block";
+}
+function hideLoupe(){ $("loupe").style.display = "none"; }
+
+$("btnShapeCancel").onclick = endShapeEdit;
+$("btnShapeSave").onclick = ()=>{
+  const z = cur && cur.zones.find(x=>x.id===shapeEdit.zone.id);
+  if(!z){ toast("That zone is gone (deleted on another device?)"); endShapeEdit(); return; }
+  if(shapeDirty()){ z.points = clone(shapeEdit.pts); persistSite(); toast("Shape saved"); }
+  endShapeEdit(); renderZoneList();
+};
+$("btnDelCorner").onclick = ()=>{
+  if(!shapeEdit || shapeEdit.sel==null || shapeEdit.pts.length<=3) return;
+  shapeEdit.pts.splice(shapeEdit.sel, 1); shapeEdit.sel = null;
+  renderZones(); paintEditBar();
+};
+$("btnZoneDetails").onclick = ()=>{ if(shapeEdit) openZoneSheet(cur.zones.find(x=>x.id===shapeEdit.zone.id) || shapeEdit.zone); };
+
 /* ---------------- zoom ---------------- */
-function applyZoom(){ $("imgWrap").style.width = (zoom*100)+"%"; }
+function applyZoom(){ $("imgWrap").style.width = (zoom*100)+"%"; if(shapeEdit) renderZones(); }   // handles stay finger-sized
 $("zoomIn").onclick = ()=>{ zoom = Math.min(4, zoom+0.5); applyZoom(); };
 $("zoomOut").onclick = ()=>{ zoom = Math.max(1, zoom-0.5); applyZoom(); };
 
@@ -2387,6 +2596,7 @@ $("zoomOut").onclick = ()=>{ zoom = Math.max(1, zoom-0.5); applyZoom(); };
   const dist = t => Math.hypot(t[0].clientX-t[1].clientX, t[0].clientY-t[1].clientY);
   area.addEventListener("touchstart", e=>{
     if(e.touches.length!==2 || $("imgWrap").style.display==="none") return;
+    cancelShapeDrag();                                       // a second finger means zoom, not drag
     const r = $("imgWrap").getBoundingClientRect(), [cx, cy] = mid(e.touches);
     pinch = {d: dist(e.touches), z: zoom, fx: (cx-r.left)/r.width, fy: (cy-r.top)/r.height};  // photo point under the fingers
     e.preventDefault();
@@ -2443,6 +2653,7 @@ $("zCancel").onclick = ()=>{ pendingNewZone=null; hideSheets(); };
 $("zDelete").onclick = ()=>{
   if(editingZone && confirm(`Delete zone “${editingZone.name}”?`)){
     cur.zones = cur.zones.filter(z=>z!==editingZone);
+    if(shapeEdit && shapeEdit.zone.id===editingZone.id){ shapeEdit = null; paintEditBar(); }
     persistSite(); hideSheets(); renderZones(); renderZoneList();
   }
 };
