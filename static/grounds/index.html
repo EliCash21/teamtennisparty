@@ -152,9 +152,13 @@
   .spacer{flex:1;}
   .zoombtns button{width:var(--tap);}
 
-  #drawbar{display:none; gap:8px; padding:8px 10px; background:#2b3850; align-items:center;}
+  #drawbar{display:none; gap:8px; padding:8px 10px; background:#2b3850; align-items:center; flex-wrap:wrap;}
   #drawbar.on{display:flex;}
-  #drawbar .msg{flex:1; font-size:14px; color:var(--text);}
+  #drawbar .msg{flex:1 1 160px; font-size:14px; color:var(--text);}
+  #drawbar .hbtn.on{background:var(--accent); border-color:var(--accent); color:#fff;}
+  #drawbar .hbtn.exclude.on{background:#c0392b; border-color:#c0392b;}
+  #zonesSvg circle.sgin{fill:#3fae5a; stroke:#fff; stroke-width:2; vector-effect:non-scaling-stroke;}
+  #zonesSvg circle.sgex{fill:#e05252; stroke:#fff; stroke-width:2; vector-effect:non-scaling-stroke;}
 
   /* pinch is handled in JS (#10). The photo scrolls sideways on its own, so zooming
      never pushes the notes/tasks below it off the screen. */
@@ -435,6 +439,8 @@
 
     <div id="drawbar">
       <div class="msg" id="drawMsg">Tap the photo to add corner points.</div>
+      <button class="hbtn" id="btnSuggest">✨ Suggest</button>
+      <button class="hbtn exclude" id="btnExclude" style="display:none;">Exclude</button>
       <button class="hbtn" id="btnUndoPt">Undo</button>
       <button class="hbtn" id="btnCancelDraw">Cancel</button>
       <button class="hbtn primary" id="btnFinishZone">Finish</button>
@@ -1953,7 +1959,8 @@ function renderZones(){
     const poly = document.createElementNS("http://www.w3.org/2000/svg","polygon");
     poly.setAttribute("points",ptStr);
     poly.setAttribute("class",z.status);
-    poly.addEventListener("click",ev=>{ ev.stopPropagation(); zoneTapped(z); });
+    poly.addEventListener("click",ev=>{ if(mode==="draw") return;          // drawing: let the tap reach the photo
+      ev.stopPropagation(); zoneTapped(z); });
     svg.appendChild(poly);
     const [cx,cy] = centroid(z.points);
     const txt = document.createElementNS("http://www.w3.org/2000/svg","text");
@@ -1976,6 +1983,12 @@ function renderZones(){
       svg.appendChild(c);
     });
   }
+  if(mode==="draw" && suggestOn) sam.pts.forEach(p=>{          // the Suggest taps: green include, red exclude
+    const c = document.createElementNS("http://www.w3.org/2000/svg","circle");
+    c.setAttribute("cx",p[0]*W); c.setAttribute("cy",p[1]*H);
+    c.setAttribute("r",Math.max(W,H)/90); c.setAttribute("class", p[2] ? "sgin" : "sgex");
+    svg.appendChild(c);
+  });
 }
 function renderZoneList(){
   const wrap = $("zoneList"); wrap.innerHTML = "";
@@ -2131,6 +2144,7 @@ $("zonesSvg").addEventListener("click",ev=>{
   const r = svg.getBoundingClientRect();
   const x = (ev.clientX - r.left)/r.width, y = (ev.clientY - r.top)/r.height;
   if(x<0||x>1||y<0||y>1) return;
+  if(suggestOn){ suggestTap(x, y); return; }
   drawPts.push([x,y]);
   drawMsgCount();
   renderZones();
@@ -2146,12 +2160,211 @@ function setMode(m){
   mode = m;
   document.querySelectorAll("#modeSeg button").forEach(b=>b.classList.toggle("on",b.dataset.mode===m));
   $("drawbar").classList.toggle("on", m==="draw");
-  if(m!=="draw") drawPts=[];
+  if(m!=="draw"){ drawPts=[]; suggestOn = false; sam.pts = []; }
   if(m==="draw") $("drawMsg").textContent = "Tap the photo to add corner points.";
+  paintSuggest();
   renderZones();
 }
 document.querySelectorAll("#modeSeg button").forEach(b=>b.onclick=()=>setMode(b.dataset.mode));
-$("btnUndoPt").onclick = ()=>{ drawPts.pop(); if(drawPts.length) drawMsgCount(); renderZones(); };
+$("btnUndoPt").onclick = ()=>{
+  if(suggestOn && sam.pts.length){                      // undo the last Suggest tap
+    if(sam.busy) return;
+    sam.pts.pop();
+    if(sam.pts.some(p=>p[2]===1)) suggestRun();
+    else{ sam.pts = []; drawPts = []; $("drawMsg").textContent = "Tap inside a lawn."; renderZones(); }
+    return;
+  }
+  drawPts.pop(); if(drawPts.length) drawMsgCount(); renderZones();
+};
+
+/* ---------------- suggest outline (zone upgrade Phase 2, 2026-10-28) ----------------
+   In Draw mode, ✨ Suggest turns taps into hints for Segment Anything (SlimSAM,
+   Xenova/slimsam-77-uniform, quantized, ~14 MB) running in this browser: a tap inside a
+   lawn = include; with Exclude on, a tap = "not this part". The result becomes a ≤25-corner
+   outline in drawPts, so Undo / Cancel / Finish → name and type work exactly as before.
+   The model loads the first time Suggest is pressed (the browser keeps it) and runs in a
+   Web Worker, so the screen stays live while it reads the photo (~5 s per photo on a Mac;
+   each tap after that ~0.2 s). If it can't load (offline the first time, old browser), the
+   button says so and tapping corners works as always. Spike + numbers: claude-work/zone-research/sam-spike. */
+const SAM_LIB = "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.8.1/dist/transformers.min.js";
+const SAM_MODEL = "Xenova/slimsam-77-uniform";
+const sam = {state:"off", why:"", pct:0, worker:null, loading:null, encodedFor:null, encoding:null, encodingFor:null,
+             pts:[], busy:false};
+let suggestOn = false, suggestLabel = 1, samSeq = 0;
+const samWait = new Map();
+
+/* the mask → the piece under the tap → its outer edge (crack following) → simplified:
+   no finer than minEps px, and loosened until it has ≤ 25 corners. Runs in the worker. */
+function samOutline(m, W, H, seed, minEps){
+  const comp = new Uint8Array(W*H);
+  let start = -1, best = Infinity;
+  for(let y=Math.max(0,seed[1]-40); y<Math.min(H,seed[1]+40); y++) for(let x=Math.max(0,seed[0]-40); x<Math.min(W,seed[0]+40); x++)
+    if(m[y*W+x]){ const d=(x-seed[0])**2+(y-seed[1])**2; if(d<best){ best=d; start=y*W+x; } }
+  if(start<0) return null;                                   // nothing found near the tap
+  const q = new Int32Array(W*H); let qh=0, qt=0; q[qt++]=start; comp[start]=1;
+  while(qh<qt){ const i=q[qh++], x=i%W, y=(i/W)|0;
+    for(let dy=-1;dy<=1;dy++) for(let dx=-1;dx<=1;dx++){ const nx=x+dx, ny=y+dy;
+      if(nx<0||ny<0||nx>=W||ny>=H) continue; const j=ny*W+nx; if(m[j] && !comp[j]){ comp[j]=1; q[qt++]=j; } } }
+  let s0 = 0; while(!comp[s0]) s0++;
+  const inside = (x,y)=> x>=0&&y>=0&&x<W&&y<H&&comp[y*W+x]===1;
+  let x = s0%W, y = (s0/W)|0, dx = 1, dy = 0; const sx=x, sy=y, poly=[[x,y]];
+  for(let n=0; n<4*W*H; n++){
+    let L, R;                                                // pixels ahead-left / ahead-right of this corner
+    if(dx===1){ L=inside(x,y-1); R=inside(x,y); } else if(dy===1){ L=inside(x,y); R=inside(x-1,y); }
+    else if(dx===-1){ L=inside(x-1,y); R=inside(x-1,y-1); } else { L=inside(x-1,y-1); R=inside(x,y-1); }
+    let ndx=dx, ndy=dy;
+    if(L){ ndx=dy; ndy=-dx; } else if(!R){ ndx=-dy; ndy=dx; }
+    if(n>0 && x===sx && y===sy && ndx===1 && ndy===0) break;   // back at the start
+    if(ndx!==dx||ndy!==dy) poly.push([x,y]);
+    dx=ndx; dy=ndy; x+=dx; y+=dy;
+  }
+  let out = samDP(poly, minEps);
+  if(out.length > 25){
+    let lo = minEps, hi = Math.max(W,H); out = samDP(poly, hi);
+    for(let k=0;k<30;k++){ const mid=(lo+hi)/2, r=samDP(poly, mid); if(r.length<=25){ hi=mid; out=r; } else lo=mid; }
+  }
+  return out.length>=3 ? out : null;
+}
+function samDP(poly, eps){                                   // Douglas–Peucker on a closed ring
+  const pts = poly.concat([poly[0]]), keep = new Uint8Array(pts.length); keep[0]=keep[pts.length-1]=1;
+  let far=0, fd=-1; pts.forEach((p,i)=>{ const d=(p[0]-pts[0][0])**2+(p[1]-pts[0][1])**2; if(d>fd){fd=d;far=i;} });
+  keep[far]=1; const stack=[[0,far],[far,pts.length-1]];
+  while(stack.length){ const [a,b]=stack.pop(); let idx=-1, md=eps;
+    const [ax,ay]=pts[a],[bx,by]=pts[b], L=Math.hypot(bx-ax,by-ay)||1;
+    for(let i=a+1;i<b;i++){ const d=Math.abs((bx-ax)*(ay-pts[i][1])-(ax-pts[i][0])*(by-ay))/L; if(d>md){md=d;idx=i;} }
+    if(idx>0){ keep[idx]=1; stack.push([a,idx],[idx,b]); } }
+  return pts.filter((_,i)=>keep[i] && i<pts.length-1);
+}
+function samWorkerSource(){
+  return `import { SamModel, AutoProcessor, RawImage, Tensor, env } from "${SAM_LIB}";
+env.allowLocalModels = false;
+env.useBrowserCache = typeof caches !== "undefined";
+let model, processor, inputs, emb;
+${samOutline.toString()}
+${samDP.toString()}
+onmessage = async ({data:m}) => {
+  try{
+    if(m.cmd === "load"){
+      const cb = p => { if(p.status === "progress") postMessage({type:"progress", progress:p.progress||0, file:p.file}); };
+      model = await SamModel.from_pretrained("${SAM_MODEL}", {dtype:"q8", device:"wasm", progress_callback:cb});
+      processor = await AutoProcessor.from_pretrained("${SAM_MODEL}");
+      postMessage({id:m.id, type:"ok"});
+    }else if(m.cmd === "encode"){
+      inputs = await processor(await RawImage.fromURL(m.url));
+      emb = await model.get_image_embeddings(inputs);
+      postMessage({id:m.id, type:"ok"});
+    }else if(m.cmd === "segment"){
+      const [rh, rw] = inputs.reshaped_input_sizes[0];
+      const ip = new Tensor("float32", m.points.flatMap(p=>[p[0]*rw, p[1]*rh]), [1,1,m.points.length,2]);
+      const il = new Tensor("int64", new BigInt64Array(m.points.map(p=>BigInt(p[2]))), [1,1,m.points.length]);
+      const t0 = performance.now();
+      const out = await model({...emb, input_points:ip, input_labels:il});
+      const t1 = performance.now();
+      const masks = await processor.post_process_masks(out.pred_masks, inputs.original_sizes, inputs.reshaped_input_sizes);
+      const t2 = performance.now();
+      const sc = out.iou_scores.data; let b = 0; for(let i=1;i<sc.length;i++) if(sc[i]>sc[b]) b = i;
+      const [H, W] = inputs.original_sizes[0];
+      const seed = m.points.filter(p=>p[2]===1).pop();
+      const ring = samOutline(masks[0].data.subarray(b*H*W, (b+1)*H*W), W, H,
+                              [Math.round(seed[0]*(W-1)), Math.round(seed[1]*(H-1))], m.minEps);
+      postMessage({id:m.id, type:"ok", ring: ring && ring.map(p=>[p[0]/W, p[1]/H]), score: sc[b],
+                   ms: {model: t1-t0, masks: t2-t1, outline: performance.now()-t2}});
+    }
+  }catch(e){ postMessage({id:m.id, type:"error", message:String(e && e.message || e)}); }
+};`;
+}
+function samAsk(cmd, extra){
+  const id = ++samSeq;
+  return new Promise((res, rej)=>{ samWait.set(id, {res, rej}); sam.worker.postMessage({cmd, id, ...extra}); });
+}
+function samFail(why){
+  sam.state = "failed"; sam.why = why; suggestOn = false; sam.pts = [];
+  if(sam.worker){ sam.worker.terminate(); sam.worker = null; }
+  samWait.forEach(w=>w.rej(new Error(why))); samWait.clear();
+  sam.encodedFor = sam.encoding = null;
+  paintSuggest(); renderZones();
+}
+function samStart(){
+  if(sam.loading) return sam.loading;
+  sam.state = "loading"; sam.pct = 0; paintSuggest();
+  sam.loading = (async ()=>{
+    try{
+      sam.worker = new Worker(URL.createObjectURL(new Blob([samWorkerSource()], {type:"text/javascript"})), {type:"module"});
+      sam.worker.onmessage = ({data:d})=>{
+        if(d.type === "progress"){ if(/onnx/.test(d.file||"")){ sam.pct = Math.round(d.progress); paintSuggest(); } return; }
+        const w = samWait.get(d.id); if(!w) return;
+        samWait.delete(d.id); d.type === "error" ? w.rej(new Error(d.message)) : w.res(d);
+      };
+      sam.worker.onerror = e=>{ e.preventDefault(); samFail(navigator.onLine===false ? "offline" : "couldn't load"); };
+      await samAsk("load");
+      sam.state = "ready"; paintSuggest();
+    }catch(e){
+      if(sam.state !== "failed") samFail(navigator.onLine===false ? "offline" : "couldn't load");
+      sam.loading = null;                                   // pressing Suggest again retries
+      throw e;
+    }
+  })();
+  return sam.loading;
+}
+/* read the current photo once (the slow step), then every tap reuses it */
+function samEncode(){
+  const key = (cur && (cur.photoKey || "inline:"+cur.id)) || "";
+  if(sam.encodedFor === key) return Promise.resolve();
+  if(sam.encoding && sam.encodingFor === key) return sam.encoding;
+  sam.encodingFor = key;
+  sam.encoding = samAsk("encode", {url: $("sitePhoto").src})
+    .then(()=>{ sam.encodedFor = key; })
+    .finally(()=>{ if(sam.encodingFor === key) sam.encoding = null; });
+  return sam.encoding;
+}
+function paintSuggest(){
+  const b = $("btnSuggest"), x = $("btnExclude");
+  b.classList.toggle("on", suggestOn && sam.state==="ready");
+  b.textContent = sam.state==="loading" ? `Suggest: loading ${sam.pct}%`
+                : sam.state==="failed" ? `Suggest: ${sam.why}` : "✨ Suggest";
+  x.style.display = suggestOn && sam.state==="ready" ? "" : "none";
+  x.classList.toggle("on", suggestLabel===0);
+}
+$("btnSuggest").onclick = async ()=>{
+  if(suggestOn){ suggestOn = false; sam.pts = []; paintSuggest(); renderZones();   // keep the outline; corners again
+    $("drawMsg").textContent = drawPts.length ? `${drawPts.length} points — tap to add more, or Finish.` : "Tap the photo to add corner points.";
+    return; }
+  if(sam.state === "loading") return;
+  suggestOn = true; suggestLabel = 1; sam.pts = [];
+  $("drawMsg").textContent = "Loading the outline helper (first time only)…";
+  try{ await samStart(); }catch(e){ $("drawMsg").textContent = "Suggest isn't available right now — tap corners instead."; return; }
+  if(!suggestOn || mode!=="draw") return;
+  paintSuggest();
+  $("drawMsg").textContent = "Reading the photo…";
+  samEncode().then(()=>{ if(suggestOn && !sam.pts.length) $("drawMsg").textContent = "Tap inside a lawn."; })
+             .catch(e=>{ if(suggestOn) $("drawMsg").textContent = "Couldn't read this photo: " + e.message; });
+};
+$("btnExclude").onclick = ()=>{ suggestLabel = suggestLabel ? 0 : 1; paintSuggest(); };
+function suggestTap(x, y){
+  if(sam.state !== "ready" || sam.busy) return;
+  if(suggestLabel===0 && !sam.pts.some(p=>p[2]===1)){ toast("Tap inside the lawn first, then use Exclude to trim"); return; }
+  sam.pts.push([x, y, suggestLabel]);
+  suggestRun();
+}
+async function suggestRun(){
+  const site = cur && cur.id;
+  sam.busy = true; renderZones();
+  $("drawMsg").textContent = sam.encodedFor ? "Finding the edge…" : "Reading the photo…";
+  try{
+    await samEncode();
+    const g = siteGeo(cur), W = $("sitePhoto").naturalWidth;
+    const minEps = g ? 0.4 * W / ((g.extent.xmax-g.extent.xmin) *                    // 0.4 m on the ground, in pixels
+                   Math.cos(2*Math.atan(Math.exp((g.extent.ymin+g.extent.ymax)/2/6378137)) - Math.PI/2)) : 2;
+    const r = await samAsk("segment", {points: sam.pts, minEps});
+    if(!cur || cur.id!==site || mode!=="draw" || !suggestOn) return;
+    if(!r.ring){ sam.pts.pop(); toast("Nothing found there — try another spot"); }
+    else drawPts = r.ring;
+    if(drawPts.length) drawMsgCount(); else $("drawMsg").textContent = "Tap inside a lawn.";
+  }catch(e){
+    if(sam.pts.length) sam.pts.pop();
+    if(suggestOn) $("drawMsg").textContent = "Suggest failed: " + e.message;
+  }finally{ sam.busy = false; renderZones(); }
+}
 $("btnCancelDraw").onclick = ()=>setMode("track");
 $("btnFinishZone").onclick = ()=>{
   if(drawPts.length<3){ toast("Need at least 3 points"); return; }
