@@ -156,6 +156,7 @@
   #drawbar.on{display:flex;}
   #drawbar .msg{flex:1 1 160px; font-size:14px; color:var(--text);}
   #drawbar .hbtn.on{background:var(--accent); border-color:var(--accent); color:#fff;}
+  #drawbar .hbtn:disabled{opacity:.5;}
   #drawbar .hbtn.exclude.on{background:#c0392b; border-color:#c0392b;}
   #editbar{display:none; gap:8px; padding:8px 10px; background:#2b3850; align-items:center; flex-wrap:wrap;}
   #editbar.on{display:flex;}
@@ -2228,6 +2229,11 @@ const SAM_MODEL = "Xenova/slimsam-77-uniform";
 const sam = {state:"off", why:"", pct:0, worker:null, loading:null, encodedFor:null, encoding:null, encodingFor:null,
              pts:[], busy:false};
 let suggestOn = false, suggestLabel = 1, samSeq = 0;
+/* iPhone/iPad: reading a photo needs ~2.3 GB (measured on a Mac, 2026-10-28); iOS closes
+   the page long before that ("A problem repeatedly occurred"), every time. Off there until
+   the heavy step can run somewhere else. iPadOS reports itself as a Mac, hence the touch check. */
+const SAM_BLOCKED = /iPhone|iPad|iPod/.test(navigator.userAgent) ||
+                    (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1);
 const samWait = new Map();
 
 /* the mask → the piece under the tap → its outer edge (crack following) → simplified:
@@ -2357,7 +2363,9 @@ function samEncode(){
 function paintSuggest(){
   const b = $("btnSuggest"), x = $("btnExclude");
   b.classList.toggle("on", suggestOn && sam.state==="ready");
-  b.textContent = sam.state==="loading" ? `Suggest: loading ${sam.pct}%`
+  b.disabled = SAM_BLOCKED;
+  b.textContent = SAM_BLOCKED ? "Suggest: not on iPhone/iPad yet"
+                : sam.state==="loading" ? `Suggest: loading ${sam.pct}%`
                 : sam.state==="failed" ? `Suggest: ${sam.why}` : "✨ Suggest";
   x.style.display = suggestOn && sam.state==="ready" ? "" : "none";
   x.classList.toggle("on", suggestLabel===0);
@@ -2366,7 +2374,7 @@ $("btnSuggest").onclick = async ()=>{
   if(suggestOn){ suggestOn = false; sam.pts = []; paintSuggest(); renderZones();   // keep the outline; corners again
     $("drawMsg").textContent = drawPts.length ? `${drawPts.length} points — tap to add more, or Finish.` : "Tap the photo to add corner points.";
     return; }
-  if(sam.state === "loading") return;
+  if(sam.state === "loading" || SAM_BLOCKED) return;
   suggestOn = true; suggestLabel = 1; sam.pts = []; rectOn = false; paintRect();
   $("drawMsg").textContent = "Loading the outline helper (first time only)…";
   try{ await samStart(); }catch(e){ $("drawMsg").textContent = "Suggest isn't available right now — tap corners instead."; return; }
