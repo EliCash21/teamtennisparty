@@ -189,6 +189,31 @@
   #zonesSvg circle.vtx{fill:#fff; stroke:var(--accent); stroke-width:2;}
   #zonesSvg polygon.parcel{fill:none; stroke:rgba(255,255,255,.9); stroke-width:1.5; pointer-events:none; cursor:auto;}
   .zarea{font-size:12px; color:var(--dim); white-space:nowrap;}
+  /* site markers (2026-11-02): drawn at a fixed screen size above zones and the property line */
+  #zonesSvg g.mk{cursor:pointer;}
+  #zonesSvg g.mk circle.mkhit{fill:transparent; stroke:none; pointer-events:all;}
+  #zonesSvg g.mk.drag{opacity:.85;}
+  #zonesSvg circle.mkring{fill:none; stroke:#fff; stroke-width:3; vector-effect:non-scaling-stroke; pointer-events:none;
+    animation:mkpulse 1s ease-out 3;}
+  @keyframes mkpulse{from{opacity:1;} to{opacity:.15;}}
+  .mkico{width:30px; height:30px; flex:0 0 auto; display:block;}
+  .mktypes{display:grid; grid-template-columns:repeat(2,1fr); gap:8px;}
+  .mktypes button{display:flex; align-items:center; gap:9px; min-height:52px; padding:8px 10px; text-align:left;
+    border-radius:11px; border:2px solid var(--line); background:var(--panel2); color:var(--text); font-size:14px; font-weight:600;}
+  .mktypes button.on{border-color:var(--accent); background:rgba(77,159,236,.16);}
+  .mkrow{display:flex; align-items:center; gap:10px; padding:9px 12px; margin-bottom:7px; min-height:var(--tap); cursor:pointer;
+    background:var(--panel); border:1px solid var(--line); border-radius:11px; font-size:14.5px;}
+  .mkrow .mknote{flex:1; min-width:0; line-height:1.35;}
+  .mkrow .mknote.empty{color:var(--dim); font-style:italic;}
+  .mkgroup{margin:10px 2px 6px; font-size:12px; font-weight:700; color:var(--dim);}
+  .mkcard{display:flex; align-items:center; gap:12px; margin-bottom:6px;}
+  .mkcard .mkico{width:44px; height:44px;}
+  .mkcard b{font-size:17px;}
+  #mkCardNote{font-size:15.5px; line-height:1.45; margin:8px 0 4px; white-space:pre-wrap;}
+  #mkErr{color:var(--todo); font-size:13.5px; font-weight:600; padding:6px 2px 0; display:none;}
+  .chipbtn{font:inherit; font-size:13px; font-weight:700; padding:4px 10px; border-radius:99px; border:1px solid var(--line);
+    background:var(--panel2); color:var(--text); min-height:30px;}
+  .chipbtn.off{color:var(--dim);}
 
   .nophoto{padding:40px 20px; text-align:center; color:var(--dim);}
   .nophoto p{margin:0 0 18px; font-size:15px; line-height:1.5;}
@@ -455,6 +480,7 @@
       <button class="hbtn" id="btnSuggest">✨ Suggest</button>
       <button class="hbtn exclude" id="btnExclude" style="display:none;">Exclude</button>
       <button class="hbtn" id="btnRect">▭ Rectangle</button>
+      <button class="hbtn" id="btnMarker">📍 Marker</button>
       <button class="hbtn" id="btnUndoPt">Undo</button>
       <button class="hbtn" id="btnCancelDraw">Cancel</button>
       <button class="hbtn primary" id="btnFinishZone">Finish</button>
@@ -488,8 +514,9 @@
         <span><span class="dot" style="background:var(--done)"></span>Done this week</span>
         <span><span class="dot" style="background:var(--flag)"></span>Needs attention</span>
         <span id="propArea" style="display:none;"></span>
+        <button class="chipbtn" id="btnMarkersShown" type="button" style="display:none;"></button>
       </div>
-      <div class="hint">Track: tap a zone to cycle its status. Edit: tap a zone to drag its corners (tap a small dot on an edge to add one); Details to rename, change type, add notes, or delete.</div>
+      <div class="hint">Track: tap a zone to cycle its status. Edit: tap a zone to drag its corners (tap a small dot on an edge to add one); Details to rename, change type, add notes, or delete. Markers (📍 in Draw zone): tap one to see it; in Edit, drag it to move it.</div>
       <div class="section" id="attachSection">
         <h3>Photos &amp; files</h3>
         <div class="attadd">
@@ -516,7 +543,11 @@
       </div>
       <div class="section">
         <h3>Zones</h3>
-        <div class="zonelist" id="zoneList"></div>
+        <div class="zonelist" id="zoneList" style="padding-bottom:12px;"></div>
+      </div>
+      <div class="section" id="markerSection">
+        <h3>Markers</h3>
+        <div class="zonelist" id="markerList"></div>
       </div>
     </main>
   </div>
@@ -645,6 +676,31 @@
       <button class="hbtn danger" id="attDelete">Delete</button>
       <button class="hbtn" id="attCancel">Close</button>
       <button class="hbtn primary" id="attSave">Save note</button>
+    </div>
+  </div>
+
+  <div class="sheet" id="shMarker" style="display:none;">
+    <h2 id="mkSheetTitle">New marker</h2>
+    <label>What is it?</label>
+    <div class="mktypes" id="mkTypes"></div>
+    <label>Note (written for someone who's never been here)</label>
+    <input type="text" id="mkNote" maxlength="200" placeholder="e.g. catch basin, 3 m east of the bike rack">
+    <label class="vopen"><input type="checkbox" id="mkSnow"> ❄️ Matters for snow removal</label>
+    <p id="mkErr"></p>
+    <div class="sheetbtns">
+      <button class="hbtn" id="mkCancel">Cancel</button>
+      <button class="hbtn primary" id="mkSave">Save</button>
+    </div>
+  </div>
+
+  <div class="sheet" id="shMarkerCard" style="display:none;">
+    <div class="mkcard"><span id="mkCardIco"></span><b id="mkCardType">Marker</b></div>
+    <div id="mkCardNote"></div>
+    <p class="hint" id="mkCardMeta" style="padding:4px 2px 0;"></p>
+    <div class="sheetbtns">
+      <button class="hbtn danger" id="mkDelete">Delete</button>
+      <button class="hbtn" id="mkClose">Close</button>
+      <button class="hbtn primary" id="mkEdit">Edit</button>
     </div>
   </div>
 </div>
@@ -952,6 +1008,12 @@ async function reconcile(key, server){
   let result = server;
   if(local && isVersioned(key) && await isDirty(key))
     result = mergeDocs(await cacheGet("_base:"+key), local, server);
+  /* a save of this doc is on its way (2026-11-02): leave the cache and the merge base
+     alone. Moving the base now, under that save, made its 409 merge read the other
+     device's new items as deletions by this one (found testing markers: leave a site and
+     reopen it while the exit-save uploads → the other device's note was lost). The save's
+     own 409 merge brings the newer copy in and redraws the screen. */
+  if(isVersioned(key) && (saveInFlight[key] || saving[key])) return local || server;
   await cachePut(key, result);
   if(isVersioned(key)) await cachePut("_base:"+key, server);
   return result;
@@ -960,6 +1022,11 @@ async function reconcile(key, server){
 async function putDoc(key, doc){
   if(isVersioned(key) && !Number.isInteger(doc._rev)) doc._rev = 0;
   for(let attempt=0; attempt<4; attempt++){
+    /* the base this save starts from, read before sending: a refresh that lands while the
+       save is uploading must not change what its 409 merge compares against. Only a base
+       of the same _rev as the doc is its real base; otherwise merge without one, which
+       keeps every item from both sides (at worst a deleted item comes back). */
+    const base = isVersioned(key) ? await cacheGet("_base:"+key) : null;
     try{
       const res = await apiPut(key, doc);
       if(isVersioned(key) && res && Number.isInteger(res.rev)){
@@ -970,7 +1037,7 @@ async function putDoc(key, doc){
       return;
     }catch(e){
       if(!(e instanceof ConflictError)) throw e;
-      const merged = mergeDocs(await cacheGet("_base:"+key), doc, e.current);
+      const merged = mergeDocs(base && base._rev===doc._rev ? base : null, doc, e.current);
       replaceInPlace(doc, merged);
       if(e.current) await cachePut("_base:"+key, e.current);
       await cachePut(key, doc);
@@ -999,12 +1066,14 @@ async function flushDirty(){
   if(!d.length) return true;
   setPill("busy","syncing…");
   for(const key of [...d]){
+    saveInFlight[key] = (saveInFlight[key]||0) + 1;
     try{
       const doc = await cacheGet(key);
       if(doc!==null) await putLatest(key,doc);
       d = ((await cacheGet("_dirty"))||[]).filter(k=>k!==key);
       await cachePut("_dirty", d);
     }catch(e){ setPill("off","offline — will retry"); return false; }
+    finally{ if(--saveInFlight[key] <= 0) delete saveInFlight[key]; }
   }
   setPill("ok","synced");
   return true;
@@ -1016,6 +1085,7 @@ async function flushDirty(){
    Now a save that arrives while one is in flight just asks for one more round, which
    sends the latest state on the fresh _rev. */
 const saving = {};
+const saveInFlight = {};          // key → saves started but not finished (incl. their first cache write)
 function putLatest(key, doc){
   const s = saving[key];
   if(s){ s.again = true; s.doc = doc; return s.done; }
@@ -1027,16 +1097,19 @@ function putLatest(key, doc){
   return st.done;
 }
 async function saveDoc(key,doc){
-  await cachePut(key,doc);
+  saveInFlight[key] = (saveInFlight[key]||0) + 1;
   try{
-    setPill("busy","syncing…");
-    await putLatest(key,doc);
-    await flushDirty();
-    setPill("ok","synced");
-  }catch(e){
-    await markDirty(key);
-    setPill("off","offline — will retry");
-  }
+    await cachePut(key,doc);
+    try{
+      setPill("busy","syncing…");
+      await putLatest(key,doc);
+      await flushDirty();
+      setPill("ok","synced");
+    }catch(e){
+      await markDirty(key);
+      setPill("off","offline — will retry");
+    }
+  }finally{ if(--saveInFlight[key] <= 0) delete saveInFlight[key]; }
 }
 window.addEventListener("online", ()=>{ flushDirty(); flushEvents(); });
 
@@ -1875,6 +1948,7 @@ function redrawSite(){
   showAerial();
   renderZoneList();
   renderPropArea();
+  renderMarkerList();
 }
 
 /* ---------------- aerial photos (2026-10-28, #6) ----------------
@@ -1918,7 +1992,7 @@ function persistSite(){
 function backToList(){
   if(shapeDirty() && !confirm("Discard the changes to this zone's shape?")) return;
   shapeEdit = null; cancelShapeDrag(); hideLoupe();
-  hideUndo();
+  hideUndo(); cancelMarkerDrag();
   if(cur){ cur.notes = $("siteNotes").value; persistSite(); }
   cur = null; drawPts=[];
   $("scrSite").classList.remove("active");
@@ -2019,6 +2093,7 @@ function renderZones(){
     c.setAttribute("r",Math.max(W,H)/90); c.setAttribute("class", p[2] ? "sgin" : "sgex");
     svg.appendChild(c);
   });
+  drawMarkers(svg, W, H);                                    // always on top
 }
 function renderZoneList(){
   const wrap = $("zoneList"); wrap.innerHTML = "";
@@ -2175,6 +2250,7 @@ $("zonesSvg").addEventListener("click",ev=>{
   const r = svg.getBoundingClientRect();
   const x = (ev.clientX - r.left)/r.width, y = (ev.clientY - r.top)/r.height;
   if(x<0||x>1||y<0||y>1) return;
+  if(markerOn){ newMarkerAt(x, y); return; }
   if(rectOn){ rectTap(x, y); return; }
   if(suggestOn){ suggestTap(x, y); return; }
   drawPts.push([x,y]);
@@ -2197,13 +2273,15 @@ function setMode(m){
   document.querySelectorAll("#modeSeg button").forEach(b=>b.classList.toggle("on",b.dataset.mode===m));
   $("drawbar").classList.toggle("on", m==="draw");
   $("editbar").classList.toggle("on", m==="edit");
-  if(m!=="draw"){ drawPts=[]; suggestOn = false; sam.pts = []; rectOn = false; }
-  if(m==="draw") $("drawMsg").textContent = "Tap the photo to add corner points.";
-  paintSuggest(); paintRect(); paintEditBar();
+  if(m!=="draw"){ drawPts=[]; suggestOn = false; sam.pts = []; rectOn = false; markerOn = false; }
+  if(markerDrag) cancelMarkerDrag();
+  if(m==="draw") $("drawMsg").textContent = markerOn ? "Tap the photo where the marker goes." : "Tap the photo to add corner points.";
+  paintSuggest(); paintRect(); paintMarkerBtn(); paintEditBar();
   renderZones();
 }
 document.querySelectorAll("#modeSeg button").forEach(b=>b.onclick=()=>setMode(b.dataset.mode));
 $("btnUndoPt").onclick = ()=>{
+  if(markerOn){ toast("Nothing to undo — a marker is only added when you press Save"); return; }
   if(rectOn){ drawPts = []; $("drawMsg").textContent = "Tap one corner, then the opposite corner."; renderZones(); return; }
   if(suggestOn && sam.pts.length){                      // undo the last Suggest tap
     if(sam.busy) return;
@@ -2375,7 +2453,7 @@ $("btnSuggest").onclick = async ()=>{
     $("drawMsg").textContent = drawPts.length ? `${drawPts.length} points — tap to add more, or Finish.` : "Tap the photo to add corner points.";
     return; }
   if(sam.state === "loading" || SAM_BLOCKED) return;
-  suggestOn = true; suggestLabel = 1; sam.pts = []; rectOn = false; paintRect();
+  suggestOn = true; suggestLabel = 1; sam.pts = []; rectOn = false; markerOn = false; paintRect(); paintMarkerBtn();
   $("drawMsg").textContent = "Loading the outline helper (first time only)…";
   try{ await samStart(); }catch(e){ $("drawMsg").textContent = "Suggest isn't available right now — tap corners instead."; return; }
   if(!suggestOn || mode!=="draw") return;
@@ -2425,6 +2503,7 @@ function paintRect(){ $("btnRect").classList.toggle("on", rectOn); }
 $("btnRect").onclick = ()=>{
   rectOn = !rectOn;
   if(rectOn && suggestOn){ suggestOn = false; sam.pts = []; paintSuggest(); }
+  if(rectOn){ markerOn = false; paintMarkerBtn(); }
   paintRect();
   $("drawMsg").textContent = rectOn ? "Tap one corner, then the opposite corner." : "Tap the photo to add corner points.";
   renderZones();
@@ -2440,6 +2519,282 @@ function rectTap(x, y){
     $("drawMsg").textContent = "Now tap the opposite corner.";
   }
   renderZones();
+}
+
+/* ---------------- site markers (2026-11-02, Phase 1) ----------------
+   Point features worth knowing about on a site: drains not to bury in snow, hydrants,
+   shut-offs, garbage cans… The site doc gets markers:[{id, type, x, y, lon?, lat?, note,
+   snow, ts, who?, updTs?, updBy?}]. x,y are 0–1 fractions of the current photo, like zone
+   points; lon/lat are saved too when the site has geo, so markers can be re-placed after a
+   photo switch. A site with no `markers` field behaves exactly as before (the field is only
+   created by the first marker). Saves go through saveDoc, so the normal _rev merge applies:
+   mergeIdList merges markers item by item. Draw mode 📍 Marker: tap the photo → sheet → Save.
+   Tap a marker (any mode) → its card. Edit mode: drag a marker to move it. */
+const MARKER_TYPES = {
+  drain:     {label:"Drain / catch basin", color:"#1f6feb", snow:true,
+              g:'<rect x="6.5" y="6.5" width="11" height="11" rx="1.5"/><line x1="9.5" y1="7" x2="9.5" y2="17"/><line x1="12" y1="7" x2="12" y2="17"/><line x1="14.5" y1="7" x2="14.5" y2="17"/>'},
+  hydrant:   {label:"Fire hydrant", color:"#d93a2f", snow:true,
+              g:'<path d="M9 18v-7.5a3 3 0 0 1 6 0V18z"/><line x1="7.5" y1="18" x2="16.5" y2="18"/><line x1="6.8" y1="13" x2="9" y2="13"/><line x1="15" y1="13" x2="17.2" y2="13"/><line x1="12" y1="5.2" x2="12" y2="7.4"/>'},
+  shutoff:   {label:"Water shut-off", color:"#0b8a8a", snow:false,
+              g:'<circle cx="12" cy="12" r="5.5"/><line x1="12" y1="6.5" x2="12" y2="17.5"/><line x1="6.5" y1="12" x2="17.5" y2="12"/>'},
+  irrigation:{label:"Irrigation valve / controller", color:"#2f9e44", snow:false,
+              g:'<line x1="12" y1="18" x2="12" y2="12.5"/><line x1="8.5" y1="18" x2="15.5" y2="18"/><path d="M12 12.5c-2.2-1.4-3.6-3.4-4.2-6"/><path d="M12 12.5c2.2-1.4 3.6-3.4 4.2-6"/><line x1="12" y1="12.5" x2="12" y2="6"/>'},
+  hosebib:   {label:"Hose bib", color:"#6f42c1", snow:false,
+              g:'<path d="M6 10.5h7a3 3 0 0 1 3 3v1.5"/><line x1="6" y1="13.5" x2="12" y2="13.5"/><line x1="9.5" y1="7" x2="9.5" y2="10.5"/><line x1="7.5" y1="7" x2="11.5" y2="7"/><line x1="16" y1="17.5" x2="16" y2="18.2"/>'},
+  garbage:   {label:"Garbage can", color:"#7a5530", snow:false,
+              g:'<path d="M8 9h8l-.9 9H8.9z"/><line x1="6.8" y1="7.3" x2="17.2" y2="7.3"/><line x1="10.5" y1="5.6" x2="13.5" y2="5.6"/><line x1="11" y1="11" x2="11" y2="16"/><line x1="13" y1="11" x2="13" y2="16"/>'},
+  hazard:    {label:"Hazard", color:"#f2b01e", ink:"#1b1b1b", snow:false,
+              g:'<path d="M12 6.2l6.2 10.8H5.8z"/><line x1="12" y1="10.4" x2="12" y2="13.4"/><line x1="12" y1="15.3" x2="12" y2="15.4"/>'},
+  other:     {label:"Other", color:"#4a5568", snow:false,
+              g:'<circle cx="12" cy="12" r="2.6"/><line x1="12" y1="12" x2="12" y2="12"/>'}
+};
+const MARKER_ORDER = Object.keys(MARKER_TYPES);
+const MARKER_PX = 30, MARKER_HIT_PX = 22;                  // drawn 30 px across, 44 px touch target, at any zoom
+const NS_SVG = "http://www.w3.org/2000/svg";
+function markerType(t){ return MARKER_TYPES[t] || MARKER_TYPES.other; }
+/* the icon in a 24×24 box: a coloured disc with a white rim and a dark outer ring (reads on grass,
+   asphalt and snow), glyph in white (dark on the yellow hazard disc) */
+function markerGlyph(t){
+  const T = markerType(t), ink = T.ink || "#fff";
+  return `<circle cx="12" cy="12" r="11.6" fill="rgba(0,0,0,.55)"/><circle cx="12" cy="12" r="10.4" fill="${T.color}" stroke="#fff" stroke-width="1.6"/>` +
+         `<g fill="none" stroke="${ink}" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${T.g}</g>`;
+}
+function markerIcon(t){ return `<svg class="mkico" viewBox="0 0 24 24" aria-hidden="true">${markerGlyph(t)}</svg>`; }
+function markersOf(doc){ return doc && Array.isArray(doc.markers) ? doc.markers : []; }
+
+/* 0–1 photo point ↔ lon/lat through the city photo's EPSG:3857 extent (y runs down from ymax,
+   as in city_aerials.py). Unit-tested in claude-work/markers-test/geo_test.js. */
+const R_MERC = 6378137;
+function fracToLonLat(g, x, y){
+  const e = g.extent, X = e.xmin + x*(e.xmax-e.xmin), Y = e.ymax - y*(e.ymax-e.ymin);
+  return [X/R_MERC*180/Math.PI, (2*Math.atan(Math.exp(Y/R_MERC)) - Math.PI/2)*180/Math.PI];
+}
+function lonLatToFrac(g, lon, lat){
+  const e = g.extent, X = lon*Math.PI/180*R_MERC, Y = R_MERC*Math.log(Math.tan(Math.PI/4 + lat*Math.PI/360));
+  return [(X-e.xmin)/(e.xmax-e.xmin), (e.ymax-Y)/(e.ymax-e.ymin)];
+}
+/* set x,y (and lon/lat when the site has geo; dropped when it doesn't, since they'd no longer match) */
+function placeMarker(m, x, y){
+  m.x = +x.toFixed(5); m.y = +y.toFixed(5);
+  const g = siteGeo(cur);
+  if(g){ const [lon, lat] = fracToLonLat(g, x, y); m.lon = +lon.toFixed(7); m.lat = +lat.toFixed(7); }
+  else{ delete m.lon; delete m.lat; }
+}
+function stampEdit(m){ m.updTs = new Date().toISOString(); const w = whoAmI(); if(w) m.updBy = w; else delete m.updBy; }
+
+/* show/hide, remembered per device */
+function markersShown(){ try{ return localStorage.getItem("gt.markers") !== "hidden"; }catch(e){ return true; } }
+function setMarkersShown(on){ try{ localStorage.setItem("gt.markers", on ? "shown" : "hidden"); }catch(e){} paintMarkersToggle(); renderZones(); }
+function paintMarkersToggle(){
+  const b = $("btnMarkersShown"), n = markersOf(cur).length, on = markersShown();
+  b.style.display = n ? "" : "none";
+  b.textContent = on ? `📍 Markers: shown` : `📍 Markers: hidden`;
+  b.classList.toggle("off", !on);
+}
+$("btnMarkersShown").onclick = ()=>setMarkersShown(!markersShown());
+
+let markerOn = false, markerFlash = null, markerFlashTimer = null;
+let markerDrag = null;          // {id, pid, pos, start, dx, dy, cx0, cy0, moved, touch, g, W, H, sc}
+function paintMarkerBtn(){ $("btnMarker").classList.toggle("on", markerOn); }
+$("btnMarker").onclick = ()=>{
+  markerOn = !markerOn;
+  if(markerOn){
+    rectOn = false; suggestOn = false; sam.pts = []; paintRect(); paintSuggest();
+    if(!markersShown()){ setMarkersShown(true); toast("Markers shown"); }
+  }
+  paintMarkerBtn();
+  $("drawMsg").textContent = markerOn ? "Tap the photo where the marker goes."
+    : drawPts.length ? `${drawPts.length} points — tap to add more, or Finish.` : "Tap the photo to add corner points.";
+  renderZones();
+};
+
+function drawMarkers(svg, W, H){
+  const list = markersOf(cur);
+  if(!list.length) return;
+  const show = markersShown(), rw = svg.getBoundingClientRect().width, k = rw ? W/rw : 1, sc = k*MARKER_PX/24;
+  list.forEach(m=>{
+    const dragging = markerDrag && markerDrag.id===m.id;
+    if(!show && m.id!==markerFlash && !dragging) return;
+    const pos = dragging ? markerDrag.pos : [num(m.x), num(m.y)];
+    const g = document.createElementNS(NS_SVG, "g");
+    g.setAttribute("class", "mk" + (dragging && markerDrag.moved ? " drag" : ""));
+    g.setAttribute("transform", `translate(${pos[0]*W} ${pos[1]*H}) scale(${sc})`);
+    g.innerHTML = (m.id===markerFlash ? `<circle class="mkring" cx="0" cy="0" r="17"/>` : "") +
+      `<g transform="translate(-12 -12)">${markerGlyph(m.type)}</g><circle class="mkhit" cx="0" cy="0" r="${MARKER_HIT_PX/(MARKER_PX/24)}"/>`;
+    g.addEventListener("click", ev=>{
+      if(mode==="draw" && !markerOn && (drawPts.length || rectOn || suggestOn)) return;   // mid-zone: the tap is a corner
+      ev.stopPropagation();
+      if(mode==="edit") return;                                // Edit opens the card on pointerup instead
+      openMarkerCard(m.id);
+    });
+    g.addEventListener("pointerdown", ev=>{
+      if(mode!=="edit" || shapeDrag) return;
+      ev.preventDefault(); ev.stopPropagation();
+      try{ svg.setPointerCapture(ev.pointerId); }catch(e){}
+      const f = svgFrac(ev);
+      markerDrag = {id:m.id, pid:ev.pointerId, pos:pos.slice(), start:pos.slice(), dx:pos[0]-f[0], dy:pos[1]-f[1],
+                    cx0:ev.clientX, cy0:ev.clientY, moved:false, touch:ev.pointerType!=="mouse", g, W, H, sc};
+    });
+    if(dragging) markerDrag.g = g;
+    svg.appendChild(g);
+  });
+}
+function markerDragMove(ev){
+  const d = markerDrag;
+  ev.preventDefault();
+  if(!d.moved && Math.hypot(ev.clientX-d.cx0, ev.clientY-d.cy0) < 6) return;   // still a tap
+  d.moved = true; d.g.classList.add("drag");
+  const f = svgFrac(ev);
+  d.pos = [Math.min(1, Math.max(0, f[0]+d.dx)), Math.min(1, Math.max(0, f[1]+d.dy))];
+  d.g.setAttribute("transform", `translate(${d.pos[0]*d.W} ${d.pos[1]*d.H}) scale(${d.sc})`);
+  if(d.touch) showLoupe(ev, d.pos, null);
+}
+function markerDragEnd(ev){
+  const d = markerDrag; markerDrag = null; hideLoupe();
+  if(ev.type==="pointercancel"){ renderZones(); return; }
+  if(!d.moved){ renderZones(); openMarkerCard(d.id); return; }
+  const m = markersOf(cur).find(x=>x.id===d.id);
+  if(!m){ renderZones(); toast("That marker is gone (deleted on another device?)"); return; }
+  placeMarker(m, d.pos[0], d.pos[1]); stampEdit(m);
+  saveMarkers("Marker moved");
+}
+function cancelMarkerDrag(){ if(!markerDrag) return; markerDrag = null; hideLoupe(); renderZones(); }
+
+/* save after any marker change; failures are said out loud (rule 7) */
+async function saveMarkers(okMsg){
+  if(!cur) return;
+  const doc = cur, key = "site:"+doc.id;
+  renderZones(); renderMarkerList();
+  try{
+    refreshCounts(doc);
+    await saveDoc(key, doc);
+    saveIndexDebounced();
+    toast(await isDirty(key) ? "Saved on this device — syncs with signal" : okMsg);
+  }catch(e){
+    alert("Couldn't save the marker, even on this device: " + (e && e.message || e) +
+          "\nTry again. If it keeps happening, use ⋯ → Send feedback.");
+  }
+}
+
+/* the add / edit sheet */
+let pendingMarker = null, editingMarkerId = null, mkSel = null, mkSnowTouched = false;
+function newMarkerAt(x, y){ pendingMarker = [x, y]; openMarkerSheet(null); }
+function openMarkerSheet(m){
+  editingMarkerId = m ? m.id : null;
+  mkSel = m ? (MARKER_TYPES[m.type] ? m.type : "other") : null;
+  mkSnowTouched = false;
+  $("mkSheetTitle").textContent = m ? "Edit marker" : "New marker";
+  $("mkNote").value = m ? (m.note||"") : "";
+  $("mkSnow").checked = m ? !!m.snow : false;
+  $("mkErr").style.display = "none";
+  paintMarkerTypes();
+  showSheet("shMarker");
+}
+function paintMarkerTypes(){
+  const wrap = $("mkTypes"); wrap.innerHTML = "";
+  MARKER_ORDER.forEach(t=>{
+    const b = document.createElement("button");
+    b.type = "button"; b.className = t===mkSel ? "on" : "";
+    b.innerHTML = markerIcon(t) + `<span>${esc(MARKER_TYPES[t].label)}</span>`;
+    b.onclick = ()=>{
+      mkSel = t; $("mkErr").style.display = "none";
+      if(!editingMarkerId && !mkSnowTouched) $("mkSnow").checked = MARKER_TYPES[t].snow;   // pre-set by type
+      paintMarkerTypes();
+    };
+    wrap.appendChild(b);
+  });
+}
+$("mkSnow").onchange = ()=>{ mkSnowTouched = true; };
+$("mkCancel").onclick = ()=>{ pendingMarker = null; editingMarkerId = null; hideSheets(); };
+$("mkSave").onclick = ()=>{
+  if(!cur) return;
+  if(!mkSel){ $("mkErr").textContent = "Pick what it is first."; $("mkErr").style.display = "block"; return; }
+  const note = $("mkNote").value.trim(), snow = $("mkSnow").checked;
+  if(editingMarkerId){
+    const m = markersOf(cur).find(x=>x.id===editingMarkerId);
+    editingMarkerId = null; hideSheets();
+    if(!m){ toast("That marker is gone (deleted on another device?)"); renderZones(); renderMarkerList(); return; }
+    Object.assign(m, {type:mkSel, note, snow}); stampEdit(m);
+    saveMarkers("Marker saved");
+    return;
+  }
+  if(!pendingMarker){ hideSheets(); return; }
+  const m = {id:uid(), type:mkSel, x:0, y:0, note, snow, ts:new Date().toISOString(), ...whoStamp()};
+  placeMarker(m, pendingMarker[0], pendingMarker[1]);
+  pendingMarker = null;
+  if(!Array.isArray(cur.markers)) cur.markers = [];
+  cur.markers.push(m);
+  hideSheets();
+  if(mode==="draw" && markerOn) $("drawMsg").textContent = "Saved. Tap to add another, or press 📍 Marker to stop.";
+  paintMarkersToggle();
+  saveMarkers("Marker saved");
+};
+
+/* the card: what it is, who added it, Edit / Delete */
+let cardMarkerId = null;
+function openMarkerCard(id){
+  const m = markersOf(cur).find(x=>x.id===id);
+  if(!m) return;
+  cardMarkerId = id;
+  $("mkCardIco").innerHTML = markerIcon(m.type);
+  $("mkCardType").textContent = markerType(m.type).label + (m.snow ? "  ❄️" : "");
+  $("mkCardNote").textContent = m.note || "No note.";
+  const by = w => w ? ` by ${w}` : "";
+  $("mkCardMeta").textContent = `Added${by(m.who)}, ${m.ts ? fmtLogTs(m.ts) : "date unknown"}` +
+    (m.updTs ? ` · edited${by(m.updBy)}, ${fmtLogTs(m.updTs)}` : "") +
+    (m.snow ? " · matters for snow removal" : "");
+  showSheet("shMarkerCard");
+}
+$("mkClose").onclick = ()=>{ cardMarkerId = null; hideSheets(); };
+$("mkEdit").onclick = ()=>{
+  const m = markersOf(cur).find(x=>x.id===cardMarkerId);
+  if(!m){ hideSheets(); toast("That marker is gone (deleted on another device?)"); return; }
+  openMarkerSheet(m);
+};
+$("mkDelete").onclick = ()=>{
+  const m = markersOf(cur).find(x=>x.id===cardMarkerId);
+  if(!m){ hideSheets(); return; }
+  if(!confirm(`Delete this ${markerType(m.type).label.toLowerCase()} marker?`)) return;
+  cur.markers = markersOf(cur).filter(x=>x.id!==m.id);
+  cardMarkerId = null; hideSheets(); paintMarkersToggle();
+  saveMarkers("Marker deleted");
+};
+
+/* the list under the zones, grouped by type; tapping a row highlights the marker on the photo */
+function renderMarkerList(){
+  const wrap = $("markerList"); wrap.innerHTML = "";
+  paintMarkersToggle();
+  const list = markersOf(cur);
+  if(!list.length){
+    wrap.innerHTML = '<p class="hint" style="padding:0;">No markers yet. In “Draw zone”, press 📍 Marker and tap the photo.</p>';
+    return;
+  }
+  MARKER_ORDER.forEach(t=>{
+    const of = list.filter(m=>(MARKER_TYPES[m.type] ? m.type : "other")===t);
+    if(!of.length) return;
+    const h = document.createElement("div");
+    h.className = "mkgroup"; h.textContent = `${MARKER_TYPES[t].label} (${of.length})`;
+    wrap.appendChild(h);
+    of.slice().sort((a,b)=>(a.note||"").localeCompare(b.note||"")).forEach(m=>{
+      const d = document.createElement("div");
+      d.className = "mkrow";
+      d.innerHTML = markerIcon(m.type) + `<span class="mknote${m.note ? "" : " empty"}">${m.note ? esc(m.note) : "no note"}</span>` +
+        (m.snow ? `<span title="Matters for snow removal">❄️</span>` : "");
+      d.onclick = ()=>flashMarker(m.id);
+      wrap.appendChild(d);
+    });
+  });
+}
+function flashMarker(id){
+  const m = markersOf(cur).find(x=>x.id===id);
+  if(!m) return;
+  if($("imgWrap").style.display==="none"){ toast("The aerial photo isn't on this device yet"); return; }
+  markerFlash = id; renderZones();
+  $("siteMain").scrollTo({top: 0, behavior: "smooth"});
+  const area = $("photoArea"), w = $("imgWrap").getBoundingClientRect().width;
+  if(w > area.clientWidth) area.scrollTo({left: num(m.x)*w - area.clientWidth/2, behavior: "smooth"});
+  clearTimeout(markerFlashTimer);
+  markerFlashTimer = setTimeout(()=>{ markerFlash = null; if(!markerDrag) renderZones(); }, 3200);
 }
 
 /* ---------------- shape editing (zone upgrade Phase 3, 2026-10-28) ----------------
@@ -2511,7 +2866,7 @@ function beginShapeDrag(ev, i){
   try{ $("zonesSvg").setPointerCapture(ev.pointerId); }catch(e){}
   const f = svgFrac(ev), p = shapeEdit.pts[i];
   shapeDrag = {i, id:ev.pointerId, dx:p[0]-f[0], dy:p[1]-f[1], start:p.slice(), touch: ev.pointerType!=="mouse"};
-  if(shapeDrag.touch) showLoupe(ev);
+  if(shapeDrag.touch) showLoupe(ev, shapeEdit.pts[shapeDrag.i], shapeEdit.pts);
 }
 function moveHandles(i){
   const {W,H} = svgDims(), P = shapeEdit.pts, n = P.length, els = shapeEdit.els;
@@ -2531,17 +2886,20 @@ function cancelShapeDrag(){
   const svg = $("zonesSvg");
   /* one finger on a handle drags it rather than scrolling the page (a second finger still zooms) */
   svg.addEventListener("touchstart", e=>{
-    if(e.touches.length===1 && e.target.classList && e.target.classList.contains("hhit")) e.preventDefault();
+    if(e.touches.length===1 && e.target.classList && (e.target.classList.contains("hhit") ||
+       (mode==="edit" && e.target.classList.contains("mkhit")))) e.preventDefault();
   }, {passive:false});
   svg.addEventListener("pointermove", ev=>{
+    if(markerDrag && ev.pointerId===markerDrag.pid){ markerDragMove(ev); return; }
     if(!shapeDrag || ev.pointerId!==shapeDrag.id || !shapeEdit) return;
     ev.preventDefault();
     const f = svgFrac(ev), i = shapeDrag.i;
     shapeEdit.pts[i] = [Math.min(1, Math.max(0, f[0]+shapeDrag.dx)), Math.min(1, Math.max(0, f[1]+shapeDrag.dy))];
     moveHandles(i); paintEditMsg();
-    if(shapeDrag.touch) showLoupe(ev);
+    if(shapeDrag.touch) showLoupe(ev, shapeEdit.pts[shapeDrag.i], shapeEdit.pts);
   });
   const end = ev=>{
+    if(markerDrag && ev.pointerId===markerDrag.pid){ markerDragEnd(ev); return; }
     if(!shapeDrag || ev.pointerId!==shapeDrag.id) return;
     if(ev.type==="pointercancel"){ cancelShapeDrag(); return; }
     shapeDrag = null; shapeDragEndedAt = Date.now(); hideLoupe();
@@ -2549,10 +2907,10 @@ function cancelShapeDrag(){
   };
   svg.addEventListener("pointerup", end);
   svg.addEventListener("pointercancel", end);
-  window.addEventListener("resize", ()=>{ if(shapeEdit && !shapeDrag) renderZones(); });
+  window.addEventListener("resize", ()=>{ if((shapeEdit && !shapeDrag) || (cur && markersOf(cur).length && !markerDrag)) renderZones(); });
 })();
 /* the loupe: a 120 px circle above the finger showing the corner at 3x, with a crosshair */
-function showLoupe(ev){
+function showLoupe(ev, p, pts){                               // p = the point under the finger; pts = an outline to show, or null
   const L = $("loupe"), img = $("sitePhoto"), {W,H} = svgDims(), r = $("zonesSvg").getBoundingClientRect();
   const NS = "http://www.w3.org/2000/svg", size = 120, win = size / (r.width/W * 3);
   if(!L.firstChild){
@@ -2562,9 +2920,9 @@ function showLoupe(ev){
   }
   const s = L.firstChild, im = s.querySelector("image"), [lh, lv] = s.querySelectorAll("line");
   if(im.getAttribute("href") !== img.src){ im.setAttribute("href", img.src); im.setAttribute("width", W); im.setAttribute("height", H); }
-  const p = shapeEdit.pts[shapeDrag.i], cx = p[0]*W, cy = p[1]*H;
+  const cx = p[0]*W, cy = p[1]*H;
   s.setAttribute("viewBox", `${cx-win/2} ${cy-win/2} ${win} ${win}`);
-  s.querySelector("polygon").setAttribute("points", shapeEdit.pts.map(q=>`${q[0]*W},${q[1]*H}`).join(" "));
+  s.querySelector("polygon").setAttribute("points", (pts||[]).map(q=>`${q[0]*W},${q[1]*H}`).join(" "));
   lh.setAttribute("x1", cx-win/5); lh.setAttribute("x2", cx+win/5); lh.setAttribute("y1", cy); lh.setAttribute("y2", cy);
   lv.setAttribute("y1", cy-win/5); lv.setAttribute("y2", cy+win/5); lv.setAttribute("x1", cx); lv.setAttribute("x2", cx);
   let top = ev.clientY - size - 70;                           // well above the finger
@@ -2590,7 +2948,7 @@ $("btnDelCorner").onclick = ()=>{
 $("btnZoneDetails").onclick = ()=>{ if(shapeEdit) openZoneSheet(cur.zones.find(x=>x.id===shapeEdit.zone.id) || shapeEdit.zone); };
 
 /* ---------------- zoom ---------------- */
-function applyZoom(){ $("imgWrap").style.width = (zoom*100)+"%"; if(shapeEdit) renderZones(); }   // handles stay finger-sized
+function applyZoom(){ $("imgWrap").style.width = (zoom*100)+"%"; if(shapeEdit || (cur && markersOf(cur).length)) renderZones(); }   // handles + markers stay finger-sized
 $("zoomIn").onclick = ()=>{ zoom = Math.min(4, zoom+0.5); applyZoom(); };
 $("zoomOut").onclick = ()=>{ zoom = Math.max(1, zoom-0.5); applyZoom(); };
 
@@ -2604,7 +2962,7 @@ $("zoomOut").onclick = ()=>{ zoom = Math.max(1, zoom-0.5); applyZoom(); };
   const dist = t => Math.hypot(t[0].clientX-t[1].clientX, t[0].clientY-t[1].clientY);
   area.addEventListener("touchstart", e=>{
     if(e.touches.length!==2 || $("imgWrap").style.display==="none") return;
-    cancelShapeDrag();                                       // a second finger means zoom, not drag
+    cancelShapeDrag(); cancelMarkerDrag();                   // a second finger means zoom, not drag
     const r = $("imgWrap").getBoundingClientRect(), [cx, cy] = mid(e.touches);
     pinch = {d: dist(e.touches), z: zoom, fx: (cx-r.left)/r.width, fy: (cy-r.top)/r.height};  // photo point under the fingers
     e.preventDefault();
@@ -2668,7 +3026,7 @@ $("zDelete").onclick = ()=>{
 
 /* ---------------- sheets/menu ---------------- */
 function showSheet(id){
-  ["shZone","shMenu","shPhoto","shVisit","shAtt","shWho","shFeedback"].forEach(s=>$(s).style.display = s===id?"block":"none");
+  ["shZone","shMenu","shPhoto","shVisit","shAtt","shWho","shFeedback","shMarker","shMarkerCard"].forEach(s=>$(s).style.display = s===id?"block":"none");
   $("overlay").classList.add("on");
 }
 function hideSheets(){ $("overlay").classList.remove("on"); }
