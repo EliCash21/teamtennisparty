@@ -215,6 +215,10 @@
   .chipbtn{font:inherit; font-size:13px; font-weight:700; padding:4px 10px; border-radius:99px; border:1px solid var(--line);
     background:var(--panel2); color:var(--text); min-height:30px;}
   .chipbtn.off{color:var(--dim);}
+  .chipbtn.on{background:#e8f4ff; color:#0b3d6b; border-color:#9ed0ff;}
+  /* snow view (Phase 2): only snow markers, bigger; zones and the property line dimmed and not tappable */
+  #zonesSvg.snow polygon, #zonesSvg.snow text{opacity:.22; pointer-events:none;}
+  .badge.snowc{background:#e8f4ff; color:#0b3d6b; border:none; font-family:inherit; cursor:pointer; min-height:30px;}
 
   .nophoto{padding:40px 20px; text-align:center; color:var(--dim);}
   .nophoto p{margin:0 0 18px; font-size:15px; line-height:1.5;}
@@ -461,6 +465,7 @@
       <button class="hbtn" id="btnEditTimes" title="Add or fix a visit time">✎ Time</button>
       <span id="visitInfo"></span>
       <span class="badge slope" id="slopeChip" style="display:none;">⚠ steep slope</span>
+      <button class="badge snowc" id="snowChip" type="button" style="display:none;"></button>
     </div>
 
     <div class="toolbar">
@@ -516,8 +521,9 @@
         <span><span class="dot" style="background:var(--flag)"></span>Needs attention</span>
         <span id="propArea" style="display:none;"></span>
         <button class="chipbtn" id="btnMarkersShown" type="button" style="display:none;"></button>
+        <button class="chipbtn" id="btnSnowView" type="button" style="display:none;"></button>
       </div>
-      <div class="hint">Track: tap a zone to cycle its status. Edit: tap a zone to drag its corners (tap a small dot on an edge to add one); Details to rename, change type, add notes, or delete. Markers (📍 in Draw zone): tap one to see it; in Edit, drag it to move it.</div>
+      <div class="hint">Track: tap a zone to cycle its status. Edit: tap a zone to drag its corners (tap a small dot on an edge to add one); Details to rename, change type, add notes, or delete. Markers (📍 in Draw zone): tap one to see it; in Edit, drag it to move it. ❄️ Snow view (Track): only the snow markers, bigger, zones dimmed.</div>
       <div class="section" id="attachSection">
         <h3>Photos &amp; files</h3>
         <div class="attadd">
@@ -2044,6 +2050,8 @@ function renderZones(){
   svg.setAttribute("viewBox",`0 0 ${W} ${H}`);
   svg.innerHTML = "";
   if(!cur) return;
+  svg.classList.toggle("snow", snowActive());
+  paintSnow();
   const fontSize = Math.max(W,H)/45;
   const geo = siteGeo(cur);
   if(geo) (geo.parcel||[]).forEach(ring=>{                     // property line, under the zones, never takes taps
@@ -2551,6 +2559,7 @@ const MARKER_TYPES = {
 };
 const MARKER_ORDER = Object.keys(MARKER_TYPES);
 const MARKER_PX = 30, MARKER_HIT_PX = 22;                  // drawn 30 px across, 44 px touch target, at any zoom
+const SNOW_MARKER_PX = 44;                                 // snow view: bigger
 const NS_SVG = "http://www.w3.org/2000/svg";
 function markerType(t){ return MARKER_TYPES[t] || MARKER_TYPES.other; }
 /* the icon in a 24×24 box: a coloured disc with a white rim and a dark outer ring (reads on grass,
@@ -2594,6 +2603,35 @@ function paintMarkersToggle(){
 }
 $("btnMarkersShown").onclick = ()=>setMarkersShown(!markersShown());
 
+/* ❄️ snow view (Phase 2): in Track mode, only snow:true markers, bigger and high-contrast;
+   zones and the property line dimmed and not tappable (no stray zone taps while plowing).
+   Remembered per device. Draw and Edit always show the normal view. */
+function snowCount(){ return markersOf(cur).filter(m=>m.snow).length; }
+function snowViewOn(){ try{ return localStorage.getItem("gt.snowview") === "on"; }catch(e){ return false; } }
+function snowActive(){ return !!cur && mode==="track" && snowViewOn() && snowCount() > 0; }
+function setSnowView(on){
+  try{ localStorage.setItem("gt.snowview", on ? "on" : "off"); }catch(e){ toast("Couldn't remember that on this device"); }
+  renderZones();
+}
+function paintSnow(){
+  const n = snowCount(), chip = $("snowChip"), b = $("btnSnowView"), on = snowActive();
+  chip.style.display = b.style.display = n ? "" : "none";
+  chip.textContent = `❄️ ${n} snow spot${n===1 ? "" : "s"}`;
+  b.textContent = `❄️ Snow view: ${on ? "on" : "off"}`;
+  b.classList.toggle("on", on);
+}
+const toggleSnow = ()=>{
+  if(mode!=="track"){
+    setMode("track");
+    if(mode!=="track") return;                                // kept an unsaved shape
+    if(snowViewOn()){ renderZones(); toast("Snow view: only the snow markers"); return; }   // it was on, just hidden by Draw/Edit
+  }
+  setSnowView(!snowViewOn());
+  toast(snowViewOn() ? "Snow view: only the snow markers" : "Snow view off");
+};
+$("btnSnowView").onclick = toggleSnow;
+$("snowChip").onclick = toggleSnow;
+
 let markerOn = false, markerFlash = null, markerFlashTimer = null;
 let markerDrag = null;          // {id, pid, pos, start, dx, dy, cx0, cy0, moved, touch, g, W, H, sc}
 function paintMarkerBtn(){ $("btnMarker").classList.toggle("on", markerOn); }
@@ -2612,16 +2650,19 @@ $("btnMarker").onclick = ()=>{
 function drawMarkers(svg, W, H){
   const list = markersOf(cur);
   if(!list.length) return;
-  const show = markersShown(), rw = svg.getBoundingClientRect().width, k = rw ? W/rw : 1, sc = k*MARKER_PX/24;
+  const snow = snowActive(), show = markersShown() || snow, rw = svg.getBoundingClientRect().width, k = rw ? W/rw : 1;
+  const px = snow ? SNOW_MARKER_PX : MARKER_PX, sc = k*px/24, hitR = Math.max(MARKER_HIT_PX, px/2+4)/(px/24);
   list.forEach(m=>{
     const dragging = markerDrag && markerDrag.id===m.id;
+    if(snow && !m.snow && m.id!==markerFlash) return;
     if(!show && m.id!==markerFlash && !dragging) return;
     const pos = dragging ? markerDrag.pos : [num(m.x), num(m.y)];
     const g = document.createElementNS(NS_SVG, "g");
     g.setAttribute("class", "mk" + (dragging && markerDrag.moved ? " drag" : ""));
     g.setAttribute("transform", `translate(${pos[0]*W} ${pos[1]*H}) scale(${sc})`);
     g.innerHTML = (m.id===markerFlash ? `<circle class="mkring" cx="0" cy="0" r="17"/>` : "") +
-      `<g transform="translate(-12 -12)">${markerGlyph(m.type)}</g><circle class="mkhit" cx="0" cy="0" r="${MARKER_HIT_PX/(MARKER_PX/24)}"/>`;
+      (snow ? `<circle cx="0" cy="0" r="14.6" fill="#000"/><circle cx="0" cy="0" r="13.4" fill="#fff"/>` : "") +   // high contrast on snow and asphalt
+      `<g transform="translate(-12 -12)">${markerGlyph(m.type)}</g><circle class="mkhit" cx="0" cy="0" r="${hitR}"/>`;
     g.addEventListener("click", ev=>{
       if(mode==="draw" && !markerOn && (drawPts.length || rectOn || suggestOn)) return;   // mid-zone: the tap is a corner
       ev.stopPropagation();
@@ -2777,7 +2818,7 @@ $("mkDelete").onclick = ()=>{
 /* the list under the zones, grouped by type; tapping a row highlights the marker on the photo */
 function renderMarkerList(){
   const wrap = $("markerList"); wrap.innerHTML = "";
-  paintMarkersToggle();
+  paintMarkersToggle(); paintSnow();
   const list = markersOf(cur);
   if(!list.length){
     wrap.innerHTML = '<p class="hint" style="padding:0;">No markers yet. In “Draw zone”, press 📍 Marker and tap the photo.</p>';
