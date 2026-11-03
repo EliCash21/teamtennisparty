@@ -2784,7 +2784,8 @@ function openMarkerCard(id){
   const by = w => w ? ` by ${w}` : "";
   $("mkCardMeta").textContent = `Added${by(m.who)}, ${m.ts ? fmtLogTs(m.ts) : "date unknown"}` +
     (m.updTs ? ` · edited${by(m.updBy)}, ${fmtLogTs(m.updTs)}` : "") +
-    (m.snow ? " · matters for snow removal" : "");
+    (m.snow ? " · matters for snow removal" : "") +
+    (m.source==="city" ? ". Contains information licenced under the Open Government Licence – City of Abbotsford." : "");   // required attribution
   showSheet("shMarkerCard");
 }
 $("mkClose").onclick = ()=>{ cardMarkerId = null; hideSheets(); };
