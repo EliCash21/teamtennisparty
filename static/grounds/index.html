@@ -210,6 +210,7 @@
   .mkcard .mkico{width:44px; height:44px;}
   .mkcard b{font-size:17px;}
   #mkCardNote{font-size:15.5px; line-height:1.45; margin:8px 0 4px; white-space:pre-wrap;}
+  #mkDelete.primary{background:var(--todo); border-color:var(--todo); color:#fff;}
   #mkErr{color:var(--todo); font-size:13.5px; font-weight:600; padding:6px 2px 0; display:none;}
   .chipbtn{font:inherit; font-size:13px; font-weight:700; padding:4px 10px; border-radius:99px; border:1px solid var(--line);
     background:var(--panel2); color:var(--text); min-height:30px;}
@@ -2735,7 +2736,7 @@ let cardMarkerId = null;
 function openMarkerCard(id){
   const m = markersOf(cur).find(x=>x.id===id);
   if(!m) return;
-  cardMarkerId = id;
+  cardMarkerId = id; disarmMarkerDelete();
   $("mkCardIco").innerHTML = markerIcon(m.type);
   $("mkCardType").textContent = markerType(m.type).label + (m.snow ? "  ❄️" : "");
   $("mkCardNote").textContent = m.note || "No note.";
@@ -2751,10 +2752,23 @@ $("mkEdit").onclick = ()=>{
   if(!m){ hideSheets(); toast("That marker is gone (deleted on another device?)"); return; }
   openMarkerSheet(m);
 };
+/* Delete asks on the card itself (first tap arms, second tap deletes), not with confirm():
+   some browsers block pop-up questions and answer "no" silently, so Delete did nothing
+   with no sign why (found 2026-11-02 in the Claude app's browser). */
+let mkDelArmed = null;
+function disarmMarkerDelete(){
+  clearTimeout(mkDelArmed); mkDelArmed = null;
+  $("mkDelete").textContent = "Delete"; $("mkDelete").classList.remove("primary");
+}
 $("mkDelete").onclick = ()=>{
   const m = markersOf(cur).find(x=>x.id===cardMarkerId);
-  if(!m){ hideSheets(); return; }
-  if(!confirm(`Delete this ${markerType(m.type).label.toLowerCase()} marker?`)) return;
+  if(!m){ disarmMarkerDelete(); hideSheets(); toast("That marker is gone (deleted on another device?)"); return; }
+  if(!mkDelArmed){
+    $("mkDelete").textContent = "Tap again to delete"; $("mkDelete").classList.add("primary");
+    mkDelArmed = setTimeout(disarmMarkerDelete, 4000);
+    return;
+  }
+  disarmMarkerDelete();
   cur.markers = markersOf(cur).filter(x=>x.id!==m.id);
   cardMarkerId = null; hideSheets(); paintMarkersToggle();
   saveMarkers("Marker deleted");
